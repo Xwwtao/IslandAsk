@@ -60,6 +60,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Shared/AskActivityAttributes.swift,
+				Shared/DismissAskIntent.swift,
 				Shared/StopAskIntent.swift,
 			);
 			target = B6562F9230970285008E002D /* IslandAskWidgetExtension */;

@@ -8,7 +8,9 @@
 
 import AppIntents
 import Foundation
+import ImageIO
 import UIKit
+import UniformTypeIdentifiers
 import os
 
 nonisolated enum ScreenshotStore {
@@ -75,6 +77,51 @@ nonisolated enum ScreenshotStore {
         return url
     }
 
+    /// 发给大模型前的压缩（SPEC 第 6.8 节）：长边缩到 1536 px（小图不放大），转 JPEG（质量 0.75）。
+    /// 用 ImageIO 直接按目标尺寸解码，不把整张原图解成 UIImage，省内存；调用方应在主线程之外执行。
+    static func jpegForUpload(url: URL, sessionID: UUID) throws -> Data {
+        let logger = makeLogger()
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            logger.error("upload jpeg: open source failed session=\(sessionID.uuidString, privacy: .public)")
+            throw ScreenshotStoreError.invalidImageData
+        }
+        let thumbnailOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: uploadMaxPixelSize,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions as CFDictionary) else {
+            logger.error("upload jpeg: downscale failed session=\(sessionID.uuidString, privacy: .public)")
+            throw ScreenshotStoreError.invalidImageData
+        }
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output as CFMutableData,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else {
+            logger.error("upload jpeg: create destination failed session=\(sessionID.uuidString, privacy: .public)")
+            throw ScreenshotStoreError.jpegEncodingFailed
+        }
+        let encodeOptions: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: uploadJPEGQuality]
+        CGImageDestinationAddImage(destination, image, encodeOptions as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            logger.error("upload jpeg: finalize failed session=\(sessionID.uuidString, privacy: .public)")
+            throw ScreenshotStoreError.jpegEncodingFailed
+        }
+
+        let data = output as Data
+        logger.info(
+            "upload jpeg ready session=\(sessionID.uuidString, privacy: .public) size=\(image.width, privacy: .public)x\(image.height, privacy: .public) bytes=\(data.count, privacy: .public)"
+        )
+        return data
+    }
+
+    private static let uploadMaxPixelSize = 1536
+    private static let uploadJPEGQuality = 0.75
+
     /// 检查 PNG 文件头，能透写就透写。
     private static func isPNG(_ data: Data) -> Bool {
         let signature: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
@@ -86,6 +133,7 @@ nonisolated enum ScreenshotStore {
 enum ScreenshotStoreError: LocalizedError {
     case documentsDirectoryUnavailable
     case invalidImageData
+    case jpegEncodingFailed
 
     var errorDescription: String? {
         switch self {
@@ -93,6 +141,8 @@ enum ScreenshotStoreError: LocalizedError {
             return "找不到 App 的 Documents 目录"
         case .invalidImageData:
             return "截图数据无法解码为图片"
+        case .jpegEncodingFailed:
+            return "截图压缩失败"
         }
     }
 }

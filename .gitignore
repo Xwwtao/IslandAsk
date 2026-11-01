@@ -1,0 +1,9 @@
+# 本地密钥：从仓库根目录的 Secrets.swift.example 拷贝生成，不入库
+IslandAsk/Config/Secrets.swift
+
+# Xcode 用户数据
+xcuserdata/
+*.xcuserstate
+DerivedData/
+
+.DS_Store

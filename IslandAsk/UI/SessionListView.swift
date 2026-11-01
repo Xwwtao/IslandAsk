@@ -23,6 +23,7 @@ struct SessionListView: View {
         let screenshotURL: URL?
         let audioURL: URL?
         let transcript: String?
+        let result: SessionResult?
         let createdAt: Date
     }
 
@@ -153,6 +154,7 @@ struct SessionListView: View {
             thumbnail(for: session)
             VStack(alignment: .leading, spacing: 3) {
                 transcriptView(for: session)
+                resultView(for: session)
                 Text("\(session.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(session.audioURL == nil ? "无录音" : "已录音")")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -182,6 +184,25 @@ struct SessionListView: View {
             Text("没有识别到文字")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
+        }
+    }
+
+    /// M2 的大模型结果（.json）。M3 换成会话页里的完整回答。
+    @ViewBuilder
+    private func resultView(for session: SessionArtifact) -> some View {
+        if let result = session.result {
+            switch result.status {
+            case .answered:
+                Text(result.summary ?? "")
+                    .font(.caption)
+                    .foregroundStyle(.blue)
+                    .lineLimit(3)
+            case .failed:
+                Text("回答失败：\(result.errorMessage ?? "未知错误")")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .lineLimit(2)
+            }
         }
     }
 
@@ -331,6 +352,7 @@ struct SessionListView: View {
                 screenshotURL: screenshotURLs[id],
                 audioURL: audioURLs[id],
                 transcript: transcript,
+                result: AnswerStore.load(sessionID: id),
                 createdAt: createdAt
             )
         }

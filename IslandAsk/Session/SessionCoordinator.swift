@@ -2,13 +2,16 @@
 //  SessionCoordinator.swift
 //  IslandAsk
 //
-//  M1 的调度中心：串起 Live Activity、实时转录、静音检测和 m4a 录音（SPEC 第 4、6.4 节）。
+//  调度中心：串起 Live Activity、实时转录、静音检测、m4a 录音和大模型回答（SPEC 第 4、6.4 节）。
 //  是唯一更新 Live Activity 的地方。
 //
 //  关键约定：
 //  - 灵动岛「停止」按钮与静音检测都走 stopListening(sessionID:)，不做两套结束逻辑。
 //  - 6 秒不开口走 cancel(sessionID:reason:)：failed 态 + AlertConfiguration，保活 3 秒后再结束。
 //  - 转录更新节流：第一条立即推，之后每秒最多推一次（有 pending 时补一次尾部推送）。
+//  - M2：stopListening 第一步先拿 beginBackgroundTask，再停采集 → thinking → 另起任务问大模型 →
+//    answered / failed（带 AlertConfiguration）→ 最后才关音频会话、结束后台任务（SPEC 第 4 节第 9、10 步）。
+//    answered / failed 的 Live Activity 不自动结束，等用户点关闭、开始下一次提问或打开 App。
 //
 
 import ActivityKit
@@ -35,12 +38,21 @@ final class SessionCoordinator {
     private static let maxTranscriptTailLength = 60
 
     private let audioCapture = AudioCaptureService()
+    private let llmProvider: any LLMProvider = OpenAICompatibleProvider.deepSeek()
     private let clock = ContinuousClock()
 
     private var currentActivityID: String?
     private var currentState: AskActivityAttributes.ContentState?
     private var currentSessionID: UUID?
+    private var currentScreenshotURL: URL?
     private var transcription: TranscriptionService?
+    /// 静音检测需要拿到转录文字（以转录为主判断说完/没说话，SPEC 第 6.7 节）。
+    private var silenceDetector: SilenceDetector?
+
+    /// 已停止录音、正在等大模型回答的会话（thinking 阶段）。
+    private var answeringSessionID: UUID?
+    private var answerTask: Task<Void, Never>?
+    private var answerBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     private var isStartingSession = false
     private var isStopping = false
@@ -53,9 +65,9 @@ final class SessionCoordinator {
 
     private init() {}
 
-    /// 正在启动或录音中：此时 UI 的预热/残留清理都不能碰音频会话和 Live Activity。
+    /// 正在启动、录音或等大模型回答：此时 UI 的预热/残留清理都不能碰音频会话和 Live Activity。
     var isSessionBusy: Bool {
-        isStartingSession || currentSessionID != nil
+        isStartingSession || currentSessionID != nil || answeringSessionID != nil
     }
 
     // MARK: - 开始
@@ -71,6 +83,10 @@ final class SessionCoordinator {
         defer { isStartingSession = false }
 
         // 同一时间只允许一个会话：新会话开始前先把上一个收干净（SPEC 第 6.4 节）。
+        // 上一个还在等回答：直接放弃，结果不再更新灵动岛；音频会话马上会被新会话重新激活，这里不关。
+        if answeringSessionID != nil {
+            abandonAnswering(reason: "new session started")
+        }
         if let existingSessionID = currentSessionID {
             logger.notice(
                 "start: stopping previous session previous=\(existingSessionID.uuidString, privacy: .public)"
@@ -177,7 +193,9 @@ final class SessionCoordinator {
         }
 
         self.transcription = transcription
+        silenceDetector = detector
         currentSessionID = sessionID
+        currentScreenshotURL = screenshotURL
         latestTranscriptTail = ""
         lastActivityPush = nil
         didLogFirstTranscriptUpdate = false
@@ -189,6 +207,7 @@ final class SessionCoordinator {
 
     /// 灵动岛「停止」按钮、静音检测（说完/超 60 秒）都走这里。
     /// 故意不依赖 currentSessionID 匹配：参数丢失、App 进程被重建时也要把录音和 Live Activity 收干净。
+    /// 进入 thinking 后另起任务问大模型、立即返回：StopAskIntent.perform() 会 await 这里，不能让它等回答。
     func stopListening(sessionID: String) async {
         guard !isStopping else {
             logger.error("stopListening ignored: stop already in progress session=\(sessionID, privacy: .public)")
@@ -204,6 +223,13 @@ final class SessionCoordinator {
         )
 
         guard let trackedSessionID else {
+            // 已经在等回答（例如停止按钮被重复点击）：不能把 thinking 的灵动岛和音频会话收掉。
+            if let answering = answeringSessionID {
+                logger.notice(
+                    "stopListening ignored: session=\(answering.uuidString, privacy: .public) already answering"
+                )
+                return
+            }
             logger.error("stopListening with no active session; cleaning up leftover activity")
             await endAllActivities(reason: "stop with no session")
             await audioCapture.deactivateAudioSession()
@@ -215,8 +241,10 @@ final class SessionCoordinator {
             )
         }
 
-        // 关键顺序：先停采集但保留音频会话（保活）→ 取最终转录并落盘 → 结束 Live Activity → 关音频会话。
-        // 反过来会在 activity.end(...) 完成前丢掉后台执行权，灵动岛就会残留（真机已复现）。
+        // 第一步先拿后台任务：停掉引擎后进程不再算「在录音」，要靠它撑到回答返回（SPEC 第 4 节第 9 步）。
+        beginAnswerBackgroundTask(sessionID: trackedSessionID)
+
+        // 先停采集但保留音频会话（保活）→ 取最终转录并落盘 → thinking → 等回答 → 最后才关音频会话。
         audioCapture.stopCaptureKeepingSessionActive()
         transcriptUpdateTask?.cancel()
         transcriptUpdateTask = nil
@@ -230,6 +258,7 @@ final class SessionCoordinator {
             finalText = ""
         }
         self.transcription = nil
+        silenceDetector = nil
 
         do {
             try TranscriptStore.save(finalText, sessionID: trackedSessionID)
@@ -239,16 +268,65 @@ final class SessionCoordinator {
             )
         }
 
+        let screenshotURL = currentScreenshotURL
         currentSessionID = nil
-        currentState = nil
+        currentScreenshotURL = nil
         latestTranscriptTail = ""
         lastActivityPush = nil
 
-        await endAllActivities(reason: "stop requested")
-        await audioCapture.deactivateAudioSession()
-        logger.info(
-            "stopListening finished session=\(trackedSessionID.uuidString, privacy: .public) chars=\(finalText.count, privacy: .public)"
+        let question = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else {
+            // 没识别到文字就不问大模型，按「没听到」提示后结束。
+            logger.notice("stopListening: empty transcript session=\(trackedSessionID.uuidString, privacy: .public)")
+            await presentFailureThenEnd(reason: "没听到", sessionID: trackedSessionID)
+            endAnswerBackgroundTask(reason: "empty transcript")
+            return
+        }
+
+        answeringSessionID = trackedSessionID
+        let thinkingState = AskActivityAttributes.ContentState(
+            phase: .thinking,
+            transcriptTail: String(question.suffix(Self.maxTranscriptTailLength)),
+            summary: nil,
+            errorMessage: nil,
+            startedAt: currentState?.startedAt ?? .now
         )
+        await updateCurrentActivity(thinkingState, alert: nil)
+        logger.info(
+            "thinking session=\(trackedSessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public) hasScreenshot=\(screenshotURL != nil, privacy: .public)"
+        )
+
+        answerTask = Task { [weak self] in
+            await self?.runAnswer(sessionID: trackedSessionID, question: question, screenshotURL: screenshotURL)
+        }
+    }
+
+    /// 灵动岛 answered / failed 的关闭按钮（DismissAskIntent）。
+    func dismiss(sessionID: String) async {
+        logger.info("dismiss requested session=\(sessionID, privacy: .public)")
+
+        // 正常不会在 thinking 时点到关闭；万一点到了，放弃这次回答并把保活收干净。
+        if let answering = answeringSessionID, answering.uuidString == sessionID {
+            abandonAnswering(reason: "dismissed")
+            await audioCapture.deactivateAudioSession()
+        }
+
+        // Activity 非 Sendable：先只取 id，再按 id 逐个取新引用去 end（与 scheduleActivityEnd 同一做法）。
+        let activityIDs = Self.activityIDs(sessionID: sessionID)
+        guard !activityIDs.isEmpty else {
+            activityLogger.error("dismiss: no live activity for session=\(sessionID, privacy: .public)")
+            return
+        }
+        activityLogger.info("dismissing \(activityIDs.count, privacy: .public) live activity(ies)")
+        if let currentActivityID, activityIDs.contains(currentActivityID) {
+            self.currentActivityID = nil
+            currentState = nil
+        }
+        for activityID in activityIDs {
+            if let activity = Self.findActivity(id: activityID) {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
+        }
     }
 
     /// 没说话/出错：failed 态提示一下再结束。用后台任务保住这 3 秒，音频会话可以尽早关。
@@ -261,6 +339,12 @@ final class SessionCoordinator {
         defer { isStopping = false }
 
         guard let trackedSessionID = currentSessionID else {
+            if let answering = answeringSessionID {
+                logger.notice(
+                    "cancel ignored: session=\(answering.uuidString, privacy: .public) already answering"
+                )
+                return
+            }
             logger.error("cancel with no active session; cleaning up leftover activity")
             await endAllActivities(reason: "cancel with no session")
             await audioCapture.deactivateAudioSession()
@@ -280,10 +364,19 @@ final class SessionCoordinator {
             await transcription.cancel()
         }
         self.transcription = nil
+        silenceDetector = nil
         currentSessionID = nil
+        currentScreenshotURL = nil
         latestTranscriptTail = ""
         lastActivityPush = nil
 
+        await presentFailureThenEnd(reason: reason, sessionID: trackedSessionID)
+        logger.info("cancel finished session=\(trackedSessionID.uuidString, privacy: .public)")
+    }
+
+    /// failed 态 + AlertConfiguration 提示一下，关音频会话，3 秒后结束 Live Activity。
+    /// 用于「没听到」这类不需要用户处理的失败；大模型失败会一直显示，见 runAnswer。
+    private func presentFailureThenEnd(reason: String, sessionID: UUID) async {
         let failedState = AskActivityAttributes.ContentState(
             phase: .failed,
             transcriptTail: "",
@@ -309,9 +402,178 @@ final class SessionCoordinator {
                 sound: .default
             )
         )
+        activityLogger.info(
+            "failed state shown session=\(sessionID.uuidString, privacy: .public) reason=\(reason, privacy: .public)"
+        )
         await audioCapture.deactivateAudioSession()
         scheduleActivityEnd(activityID: activityID, after: .seconds(3), backgroundTaskID: backgroundTaskID)
-        logger.info("cancel finished session=\(trackedSessionID.uuidString, privacy: .public)")
+    }
+
+    // MARK: - 大模型回答
+
+    /// thinking 之后的后台流程：压缩截图 → 问大模型 → 存 .json → answered / failed → 关音频会话 → 结束后台任务。
+    private func runAnswer(sessionID: UUID, question: String, screenshotURL: URL?) async {
+        let startedAt = clock.now
+        logger.notice(
+            "answer start session=\(sessionID.uuidString, privacy: .public) backgroundTimeRemaining=\(UIApplication.shared.backgroundTimeRemaining, privacy: .public)"
+        )
+
+        var imageJPEG: Data?
+        if let screenshotURL {
+            do {
+                imageJPEG = try await Self.makeUploadJPEG(url: screenshotURL, sessionID: sessionID)
+            } catch {
+                // 截图压缩失败不影响提问，只是不带图。
+                logger.error(
+                    "screenshot compress failed, asking without image session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
+
+        let outcome: Result<LLMAnswer, any Error>
+        do {
+            outcome = .success(try await llmProvider.ask(imageJPEG: imageJPEG, question: question, history: []))
+        } catch {
+            outcome = .failure(error)
+        }
+        let latencyMs = Self.milliseconds(clock.now - startedAt)
+
+        // 被新会话或关闭按钮放弃了：结果只记日志，不再碰灵动岛、音频会话和后台任务（放弃方已经收尾）。
+        guard answeringSessionID == sessionID else {
+            logger.notice(
+                "answer discarded: session=\(sessionID.uuidString, privacy: .public) superseded latencyMs=\(latencyMs, privacy: .public)"
+            )
+            return
+        }
+
+        var result = SessionResult(
+            sessionID: sessionID,
+            createdAt: .now,
+            question: question,
+            status: .answered,
+            summary: nil,
+            answer: nil,
+            errorMessage: nil,
+            model: llmProvider.model,
+            latencyMs: latencyMs
+        )
+        let finalState: AskActivityAttributes.ContentState
+        let alertBody: String
+        switch outcome {
+        case .success(let answer):
+            result.summary = answer.summary
+            result.answer = answer.answer
+            finalState = AskActivityAttributes.ContentState(
+                phase: .answered,
+                transcriptTail: currentState?.transcriptTail ?? "",
+                summary: answer.summary,
+                errorMessage: nil,
+                startedAt: currentState?.startedAt ?? .now
+            )
+            alertBody = answer.summary
+            logger.info(
+                "answered session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public)"
+            )
+        case .failure(let error):
+            // 后台任务过期时请求被取消，对用户来说就是超时。
+            let message: String
+            if let llmError = error as? LLMError, case .cancelled = llmError {
+                message = LLMError.timeout.errorDescription ?? "网络超时"
+            } else {
+                message = (error as? LLMError)?.errorDescription ?? error.localizedDescription
+            }
+            result.status = .failed
+            result.errorMessage = message
+            finalState = AskActivityAttributes.ContentState(
+                phase: .failed,
+                transcriptTail: currentState?.transcriptTail ?? "",
+                summary: nil,
+                errorMessage: message,
+                startedAt: currentState?.startedAt ?? .now
+            )
+            alertBody = message
+            logger.error(
+                "answer failed session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+
+        do {
+            try AnswerStore.save(result)
+        } catch {
+            logger.error(
+                "result save failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+        }
+
+        // SPEC 第 4 节第 10 步：带 AlertConfiguration 更新 → 停用音频会话 → endBackgroundTask。
+        // TODO: 核对官方文档：确认 App 在后台时带 AlertConfiguration 的 update 会让灵动岛自动展开（M1 的 failed 已用过，answered 需真机再确认）。
+        await updateCurrentActivity(
+            finalState,
+            alert: AlertConfiguration(
+                title: "IslandAsk",
+                body: LocalizedStringResource(stringLiteral: alertBody),
+                sound: .default
+            )
+        )
+        answeringSessionID = nil
+        answerTask = nil
+        await audioCapture.deactivateAudioSession()
+        endAnswerBackgroundTask(reason: "answer finished")
+    }
+
+    /// 放弃正在等的回答（新会话开始 / 用户关闭）。不关音频会话：调用方按需处理。
+    private func abandonAnswering(reason: String) {
+        let answering = answeringSessionID?.uuidString ?? "nil"
+        logger.notice(
+            "abandon answering session=\(answering, privacy: .public) reason=\(reason, privacy: .public)"
+        )
+        answeringSessionID = nil
+        answerTask?.cancel()
+        answerTask = nil
+        endAnswerBackgroundTask(reason: reason)
+    }
+
+    private func beginAnswerBackgroundTask(sessionID: UUID) {
+        endAnswerBackgroundTask(reason: "replaced by new background task")
+        answerBackgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "islandask.llm") {
+            // 系统在主线程回调过期处理；必须在这里同步结束后台任务，否则进程会被杀。
+            MainActor.assumeIsolated {
+                SessionCoordinator.shared.handleAnswerBackgroundTaskExpired()
+            }
+        }
+        if answerBackgroundTaskID == .invalid {
+            logger.error("background task unavailable session=\(sessionID.uuidString, privacy: .public)")
+        } else {
+            logger.notice(
+                "background task began session=\(sessionID.uuidString, privacy: .public) remaining=\(UIApplication.shared.backgroundTimeRemaining, privacy: .public)"
+            )
+        }
+    }
+
+    /// 后台时间用完：取消请求（runAnswer 会把它当超时显示 failed），并立即结束后台任务。
+    private func handleAnswerBackgroundTaskExpired() {
+        let answering = answeringSessionID?.uuidString ?? "nil"
+        logger.error("background task expired answering=\(answering, privacy: .public); cancelling LLM request")
+        answerTask?.cancel()
+        endAnswerBackgroundTask(reason: "expired")
+    }
+
+    private func endAnswerBackgroundTask(reason: String) {
+        guard answerBackgroundTaskID != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(answerBackgroundTaskID)
+        answerBackgroundTaskID = .invalid
+        logger.info("background task ended reason=\(reason, privacy: .public)")
+    }
+
+    /// 截图解码和 JPEG 编码比较重，放到主线程之外。
+    @concurrent
+    private nonisolated static func makeUploadJPEG(url: URL, sessionID: UUID) async throws -> Data {
+        try ScreenshotStore.jpegForUpload(url: url, sessionID: sessionID)
+    }
+
+    private nonisolated static func milliseconds(_ duration: Duration) -> Int {
+        let (seconds, attoseconds) = duration.components
+        return Int(seconds) * 1000 + Int(attoseconds / 1_000_000_000_000_000)
     }
 
     // MARK: - 异常回收
@@ -333,7 +595,9 @@ final class SessionCoordinator {
             await transcription.cancel()
         }
         transcription = nil
+        silenceDetector = nil
         currentSessionID = nil
+        currentScreenshotURL = nil
         currentState = nil
         latestTranscriptTail = ""
         lastActivityPush = nil
@@ -341,10 +605,11 @@ final class SessionCoordinator {
         await audioCapture.deactivateAudioSession()
     }
 
-    /// App 重新打开时收尾：如果当前没有在录音、却还有残留的 Live Activity
+    /// App 重新打开时收尾：如果当前没有在录音、也没在等回答，却还有残留的 Live Activity
     /// （停止时进程被挂起导致 activity.end 没执行完），补一次结束。
+    /// answered / failed 的灵动岛也在这里结束，对应 SPEC 6.10「打开 App 查看后结束」。
     func endOrphanActivitiesIfNeeded() async {
-        guard currentSessionID == nil, !isStartingSession else { return }
+        guard currentSessionID == nil, answeringSessionID == nil, !isStartingSession else { return }
 
         let activities = Activity<AskActivityAttributes>.activities
         guard !activities.isEmpty else { return }
@@ -371,6 +636,7 @@ final class SessionCoordinator {
     private func handleTranscriptUpdate(_ update: TranscriptUpdate) {
         let display = update.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !display.isEmpty else { return }
+        silenceDetector?.noteTranscript(display)
 
         if !didLogFirstTranscriptUpdate {
             didLogFirstTranscriptUpdate = true
@@ -425,6 +691,27 @@ final class SessionCoordinator {
 
     // MARK: - 收尾工具
 
+    /// 更新当前 Live Activity 并同步 currentState；activity 已不存在时只记日志。
+    private func updateCurrentActivity(
+        _ state: AskActivityAttributes.ContentState,
+        alert: AlertConfiguration?
+    ) async {
+        currentState = state
+        guard let activityID = currentActivityID, let activity = Self.findActivity(id: activityID) else {
+            activityLogger.error("update skipped: no live activity phase=\(state.phase.rawValue, privacy: .public)")
+            return
+        }
+        let content = ActivityContent(state: state, staleDate: nil)
+        if let alert {
+            await activity.update(content, alertConfiguration: alert)
+        } else {
+            await activity.update(content)
+        }
+        activityLogger.info(
+            "live activity updated phase=\(state.phase.rawValue, privacy: .public) alert=\(alert != nil, privacy: .public)"
+        )
+    }
+
     /// 结束当前所有本类型的 Live Activity（App 被重启过也能清干净）。
     private func endAllActivities(reason: String) async {
         pendingActivityPushTask?.cancel()
@@ -471,6 +758,12 @@ final class SessionCoordinator {
     /// Activity 不是 Sendable，不长期持有；需要时按 id 从 ActivityKit 里取一个新的引用。
     private nonisolated static func findActivity(id: String) -> Activity<AskActivityAttributes>? {
         Activity<AskActivityAttributes>.activities.first { $0.id == id }
+    }
+
+    private nonisolated static func activityIDs(sessionID: String) -> [String] {
+        Activity<AskActivityAttributes>.activities
+            .filter { $0.attributes.sessionID == sessionID }
+            .map(\.id)
     }
 }
 
