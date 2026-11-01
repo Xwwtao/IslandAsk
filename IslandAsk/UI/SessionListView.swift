@@ -2,7 +2,7 @@
 //  SessionListView.swift
 //  IslandAsk
 //
-//  M0 的临时验证界面：权限状态 + 会话列表（截图缩略图、录音播放）。
+//  M1 的临时验证界面：权限状态 + 会话列表（截图缩略图、最终转录文字、录音播放）。
 //  这是给真机验证用的，M3 会替换成 HistoryView / SessionDetailView，届时整个文件删除。
 //
 
@@ -22,6 +22,7 @@ struct SessionListView: View {
         let id: UUID
         let screenshotURL: URL?
         let audioURL: URL?
+        let transcript: String?
         let createdAt: Date
     }
 
@@ -31,6 +32,8 @@ struct SessionListView: View {
     @State private var player: AVAudioPlayer?
     @State private var playingSessionID: UUID?
     @State private var microphoneGranted = false
+    @State private var speechRecognitionGranted = false
+    @State private var speechModelStatus: SpeechModelStatus?
     @State private var liveActivitiesEnabled = false
     @State private var audioSessionPrimed = false
     @State private var loadError: String?
@@ -76,6 +79,23 @@ struct SessionListView: View {
                     .foregroundStyle(.secondary)
             }
             HStack {
+                Label(
+                    "语音识别",
+                    systemImage: speechRecognitionGranted ? "checkmark.circle.fill" : "xmark.circle.fill"
+                )
+                .foregroundStyle(speechRecognitionGranted ? Color.green : Color.red)
+                Spacer()
+                Text(speechRecognitionGranted ? "已授权" : "未授权")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Label("转录模型", systemImage: speechModelStatusIcon)
+                    .foregroundStyle(speechModelStatusColor)
+                Spacer()
+                Text(speechModelStatusText)
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
                 Label("实时活动", systemImage: liveActivitiesEnabled ? "checkmark.circle.fill" : "xmark.circle.fill")
                     .foregroundStyle(liveActivitiesEnabled ? Color.green : Color.red)
                 Spacer()
@@ -89,7 +109,8 @@ struct SessionListView: View {
                 Text(audioSessionPrimed ? "已就绪" : "未就绪")
                     .foregroundStyle(.secondary)
             }
-            if (!microphoneGranted || !liveActivitiesEnabled), let settingsURL = PermissionManager.appSettingsURL {
+            if (!microphoneGranted || !speechRecognitionGranted || !liveActivitiesEnabled),
+               let settingsURL = PermissionManager.appSettingsURL {
                 Link("去系统设置里修改", destination: settingsURL)
             }
         }
@@ -130,15 +151,11 @@ struct SessionListView: View {
     private func sessionRow(_ session: SessionArtifact) -> some View {
         HStack(spacing: 12) {
             thumbnail(for: session)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(session.id.uuidString.prefix(8))
-                    .font(.headline)
-                Text(session.createdAt.formatted(date: .abbreviated, time: .shortened))
+            VStack(alignment: .leading, spacing: 3) {
+                transcriptView(for: session)
+                Text("\(session.createdAt.formatted(date: .abbreviated, time: .shortened)) · \(session.audioURL == nil ? "无录音" : "已录音")")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                Text(session.audioURL == nil ? "没有录音" : "已录音")
-                    .font(.caption2)
-                    .foregroundStyle(session.audioURL == nil ? Color.red : Color.green)
             }
             Spacer()
             Button {
@@ -152,6 +169,20 @@ struct SessionListView: View {
             .accessibilityLabel(playingSessionID == session.id ? "停止播放" : "播放录音")
         }
         .padding(.vertical, 2)
+    }
+
+    @ViewBuilder
+    private func transcriptView(for session: SessionArtifact) -> some View {
+        if let transcript = session.transcript?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !transcript.isEmpty {
+            Text(transcript)
+                .font(.subheadline)
+                .lineLimit(2)
+        } else {
+            Text("没有识别到文字")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder
@@ -175,12 +206,57 @@ struct SessionListView: View {
 
     // MARK: - Data
 
+    private var speechModelStatusText: String {
+        switch speechModelStatus {
+        case .installed:
+            return "已安装"
+        case .needsDownload:
+            return "未安装"
+        case .downloading:
+            return "下载中"
+        case .unsupported:
+            return "不支持（用系统识别）"
+        case nil:
+            return "检查中"
+        }
+    }
+
+    private var speechModelStatusIcon: String {
+        switch speechModelStatus {
+        case .installed:
+            return "checkmark.circle.fill"
+        case .needsDownload:
+            return "xmark.circle.fill"
+        case .downloading:
+            return "arrow.down.circle"
+        case .unsupported:
+            return "exclamationmark.triangle.fill"
+        case nil:
+            return "circle.dashed"
+        }
+    }
+
+    private var speechModelStatusColor: Color {
+        switch speechModelStatus {
+        case .installed:
+            return .green
+        case .needsDownload:
+            return .red
+        case .downloading, .unsupported:
+            return .orange
+        case nil:
+            return .secondary
+        }
+    }
+
     private func refreshAll() async {
         // 后台被拉起时不要动音频会话和 Live Activity，避免打断刚启动的录音。
         guard scenePhase == .active else { return }
 
         let coordinator = SessionCoordinator.shared
         microphoneGranted = await PermissionManager.requestMicrophoneIfNeeded()
+        speechRecognitionGranted = PermissionManager.isSpeechRecognitionGranted
+        speechModelStatus = await SpeechModelManager.status()
         liveActivitiesEnabled = PermissionManager.areLiveActivitiesEnabled
 
         if microphoneGranted, !coordinator.isSessionBusy {
@@ -221,6 +297,7 @@ struct SessionListView: View {
 
         var screenshotURLs: [UUID: URL] = [:]
         var audioURLs: [UUID: URL] = [:]
+        var transcriptURLs: [UUID: URL] = [:]
         for url in urls {
             guard let id = UUID(uuidString: url.deletingPathExtension().lastPathComponent) else { continue }
             switch url.pathExtension.lowercased() {
@@ -228,24 +305,32 @@ struct SessionListView: View {
                 screenshotURLs[id] = url
             case "m4a":
                 audioURLs[id] = url
+            case "txt":
+                transcriptURLs[id] = url
             default:
                 break
             }
         }
 
-        let ids = Set(screenshotURLs.keys).union(audioURLs.keys)
+        let ids = Set(screenshotURLs.keys)
+            .union(audioURLs.keys)
+            .union(transcriptURLs.keys)
         let artifacts: [SessionArtifact] = ids.compactMap { id in
-            let representativeURL = audioURLs[id] ?? screenshotURLs[id]
+            let representativeURL = audioURLs[id] ?? screenshotURLs[id] ?? transcriptURLs[id]
             var createdAt = Date.distantPast
             if let representativeURL,
                let values = try? representativeURL.resourceValues(forKeys: [.creationDateKey]),
                let creationDate = values.creationDate {
                 createdAt = creationDate
             }
+            let transcript = transcriptURLs[id].flatMap { url in
+                try? String(contentsOf: url, encoding: .utf8)
+            }
             return SessionArtifact(
                 id: id,
                 screenshotURL: screenshotURLs[id],
                 audioURL: audioURLs[id],
+                transcript: transcript,
                 createdAt: createdAt
             )
         }
