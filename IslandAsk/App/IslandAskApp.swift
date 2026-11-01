@@ -2,7 +2,7 @@
 //  IslandAskApp.swift
 //  IslandAsk
 //
-//  Created by Wentao Xie on 2026/11/1.
+//  App 入口。M0 的根视图是临时验证用的 SessionListView（M3 会替换为历史列表）。
 //
 
 import SwiftUI
@@ -11,7 +11,7 @@ import SwiftUI
 struct IslandAskApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            SessionListView()
         }
     }
 }
