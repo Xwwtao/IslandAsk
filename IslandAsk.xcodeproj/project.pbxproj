@@ -6,14 +6,73 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		B6562F9630970285008E002D /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B6562F9530970285008E002D /* WidgetKit.framework */; };
+		B6562F9830970285008E002D /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B6562F9730970285008E002D /* SwiftUI.framework */; };
+		B6562FA530970288008E002D /* IslandAskWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		B6562FA330970288008E002D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B6562F793097021B008E002D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B6562F9230970285008E002D;
+			remoteInfo = IslandAskWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B6562FAA30970288008E002D /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				B6562FA530970288008E002D /* IslandAskWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		B6562F813097021B008E002D /* IslandAsk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IslandAsk.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = IslandAskWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		B6562F9530970285008E002D /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		B6562F9730970285008E002D /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		B6562FA630970288008E002D /* Exceptions for "IslandAskWidget" folder in "IslandAskWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B6562F9230970285008E002D /* IslandAskWidgetExtension */;
+		};
+		B6562FAC30970402008E002D /* Exceptions for "IslandAsk" folder in "IslandAsk" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B6562F803097021B008E002D /* IslandAsk */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		B6562F833097021B008E002D /* IslandAsk */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B6562FAC30970402008E002D /* Exceptions for "IslandAsk" folder in "IslandAsk" target */,
+			);
 			path = IslandAsk;
+			sourceTree = "<group>";
+		};
+		B6562F9930970285008E002D /* IslandAskWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B6562FA630970288008E002D /* Exceptions for "IslandAskWidget" folder in "IslandAskWidgetExtension" target */,
+			);
+			path = IslandAskWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -24,6 +83,13 @@
 			files = (
 			);
 		};
+		B6562F9030970285008E002D /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				B6562F9830970285008E002D /* SwiftUI.framework in Frameworks */,
+				B6562F9630970285008E002D /* WidgetKit.framework in Frameworks */,
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -31,6 +97,8 @@
 			isa = PBXGroup;
 			children = (
 				B6562F833097021B008E002D /* IslandAsk */,
+				B6562F9930970285008E002D /* IslandAskWidget */,
+				B6562F9430970285008E002D /* Frameworks */,
 				B6562F823097021B008E002D /* Products */,
 			);
 			sourceTree = "<group>";
@@ -39,8 +107,18 @@
 			isa = PBXGroup;
 			children = (
 				B6562F813097021B008E002D /* IslandAsk.app */,
+				B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		B6562F9430970285008E002D /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				B6562F9530970285008E002D /* WidgetKit.framework */,
+				B6562F9730970285008E002D /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -53,8 +131,12 @@
 				B6562F7D3097021B008E002D /* Sources */,
 				B6562F7E3097021B008E002D /* Frameworks */,
 				B6562F7F3097021B008E002D /* Resources */,
+				B6562FAA30970288008E002D /* Embed Foundation Extensions */,
 			);
 			buildRules = (
+			);
+			dependencies = (
+				B6562FA430970288008E002D /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B6562F833097021B008E002D /* IslandAsk */,
@@ -63,6 +145,24 @@
 			productName = IslandAsk;
 			productReference = B6562F813097021B008E002D /* IslandAsk.app */;
 			productType = "com.apple.product-type.application";
+		};
+		B6562F9230970285008E002D /* IslandAskWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B6562FA730970288008E002D /* Build configuration list for PBXNativeTarget "IslandAskWidgetExtension" */;
+			buildPhases = (
+				B6562F8F30970285008E002D /* Sources */,
+				B6562F9030970285008E002D /* Frameworks */,
+				B6562F9130970285008E002D /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				B6562F9930970285008E002D /* IslandAskWidget */,
+			);
+			name = IslandAskWidgetExtension;
+			productName = IslandAskWidgetExtension;
+			productReference = B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -75,6 +175,9 @@
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					B6562F803097021B008E002D = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					B6562F9230970285008E002D = {
 						CreatedOnToolsVersion = 27.0;
 					};
 				};
@@ -94,12 +197,18 @@
 			projectRoot = "";
 			targets = (
 				B6562F803097021B008E002D /* IslandAsk */,
+				B6562F9230970285008E002D /* IslandAskWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		B6562F7F3097021B008E002D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		B6562F9130970285008E002D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -112,7 +221,20 @@
 			files = (
 			);
 		};
+		B6562F8F30970285008E002D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		B6562FA430970288008E002D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B6562F9230970285008E002D /* IslandAskWidgetExtension */;
+			targetProxy = B6562FA330970288008E002D /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		B6562F8A3097021C008E002D /* Debug configuration for PBXProject "IslandAsk" */ = {
@@ -174,7 +296,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
-				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited) WIDEGT_EXTENSION";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
 			name = Debug;
@@ -231,6 +353,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = WIDGET_EXTENSION;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -246,11 +369,17 @@
 				DEVELOPMENT_TEAM = 6GDQDX75Z3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IslandAsk/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录下你对屏幕内容的提问";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把你的语音实时转成文字";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -278,11 +407,17 @@
 				DEVELOPMENT_TEAM = 6GDQDX75Z3;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IslandAsk/Info.plist;
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "用于录下你对屏幕内容的提问";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "用于把你的语音实时转成文字";
+				INFOPLIST_KEY_NSSupportsLiveActivities = YES;
+				INFOPLIST_KEY_NSSupportsLiveActivitiesFrequentUpdates = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
@@ -293,6 +428,66 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B6562FA830970288008E002D /* Debug configuration for PBXNativeTarget "IslandAskWidgetExtension" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6GDQDX75Z3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IslandAskWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IslandAskWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wentao.IslandAsk.IslandAskWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B6562FA930970288008E002D /* Release configuration for PBXNativeTarget "IslandAskWidgetExtension" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6GDQDX75Z3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IslandAskWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IslandAskWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wentao.IslandAsk.IslandAskWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -316,6 +511,14 @@
 			buildConfigurations = (
 				B6562F8D3097021C008E002D /* Debug configuration for PBXNativeTarget "IslandAsk" */,
 				B6562F8E3097021C008E002D /* Release configuration for PBXNativeTarget "IslandAsk" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		B6562FA730970288008E002D /* Build configuration list for PBXNativeTarget "IslandAskWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B6562FA830970288008E002D /* Debug configuration for PBXNativeTarget "IslandAskWidgetExtension" */,
+				B6562FA930970288008E002D /* Release configuration for PBXNativeTarget "IslandAskWidgetExtension" */,
 			);
 			defaultConfigurationName = Release;
 		};
