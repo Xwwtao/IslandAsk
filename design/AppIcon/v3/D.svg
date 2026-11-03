@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><defs>
+<clipPath id="sq"><rect width="1024" height="1024" rx="230"/></clipPath>
+<linearGradient id="ai" gradientUnits="userSpaceOnUse" x1="150" y1="380" x2="880" y2="660">
+  <stop offset="0" stop-color="#FF9F0A"/><stop offset="0.28" stop-color="#FF4F8B"/>
+  <stop offset="0.55" stop-color="#BF5AF2"/><stop offset="0.8" stop-color="#5E8BFF"/><stop offset="1" stop-color="#40E0FF"/></linearGradient>
+<linearGradient id="ai2" gradientUnits="userSpaceOnUse" x1="880" y1="380" x2="150" y2="660">
+  <stop offset="0" stop-color="#FF9F0A"/><stop offset="0.3" stop-color="#FF4F8B"/>
+  <stop offset="0.6" stop-color="#BF5AF2"/><stop offset="1" stop-color="#40C8FF"/></linearGradient>
+<linearGradient id="ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1E1E22"/><stop offset="1" stop-color="#000"/></linearGradient>
+<linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.35" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<linearGradient id="sp" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#E2D9FF"/></linearGradient>
+<filter id="b60" x="-50%" y="-80%" width="200%" height="260%"><feGaussianBlur stdDeviation="60"/></filter>
+<filter id="b24" x="-50%" y="-80%" width="200%" height="260%"><feGaussianBlur stdDeviation="24"/></filter>
+<filter id="b6" x="-50%" y="-80%" width="200%" height="260%"><feGaussianBlur stdDeviation="6"/></filter>
+<filter id="goo" x="-20%" y="-40%" width="140%" height="180%">
+  <feGaussianBlur in="SourceGraphic" stdDeviation="22" result="b"/>
+  <feColorMatrix in="b" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 40 -18"/>
+</filter>
+</defs><g clip-path="url(#sq)"><rect width="1024" height="1024" fill="#07070B"/>
+<rect x="182" y="382" width="660" height="260" rx="130" fill="url(#ai)" filter="url(#b60)" opacity="0.95"/>
+<rect x="182" y="382" width="660" height="260" rx="130" fill="none" stroke="url(#ai2)" stroke-width="34" filter="url(#b24)"/>
+<rect x="182" y="382" width="660" height="260" rx="130" fill="url(#ink)"/>
+<rect x="182" y="382" width="660" height="260" rx="130" fill="none" stroke="url(#ai)" stroke-width="7"/>
+<rect x="182" y="382" width="660" height="260" rx="130" fill="url(#sheen)"/>
+<path d="M0,-1 C0.1,-0.25 0.25,-0.1 1,0 C0.25,0.1 0.1,0.25 0,1 C-0.1,0.25 -0.25,0.1 -1,0 C-0.25,-0.1 -0.1,-0.25 0,-1 Z" transform="translate(312,512) scale(76)" fill="url(#sp)"/>
+<rect x="520" y="477.0" width="36" height="70" rx="18.0" fill="url(#ai)"/><rect x="582" y="437.0" width="36" height="150" rx="18.0" fill="url(#ai)"/><rect x="644" y="460.0" width="36" height="104" rx="18.0" fill="url(#ai)"/><rect x="706" y="426.0" width="36" height="172" rx="18.0" fill="url(#ai)"/><rect x="768" y="482.0" width="36" height="60" rx="18.0" fill="url(#ai)"/>
+</g></svg>

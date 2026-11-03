@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0A1A4F"/>
+      <stop offset="0.55" stop-color="#1B2C8F"/>
+      <stop offset="1" stop-color="#4A1F9E"/>
+    </linearGradient>
+    <radialGradient id="glowCyan" cx="0.55" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#38D4FF" stop-opacity="0.75"/>
+      <stop offset="1" stop-color="#38D4FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowViolet" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#B455FF" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#B455FF" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowOrange" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#FF9F0A" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#FF9F0A" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- glass rim: bright top-left, fading to bottom-right -->
+    <linearGradient id="rim" x1="0" y1="0" x2="0.6" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="0.45" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.55"/>
+    </linearGradient>
+    <linearGradient id="glassFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.30"/>
+      <stop offset="0.5" stop-color="#FFFFFF" stop-opacity="0.10"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.18"/>
+    </linearGradient>
+    <linearGradient id="specular" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+
+    <linearGradient id="wave" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.6" stop-color="#C9F3FF"/>
+      <stop offset="1" stop-color="#7FE0FF"/>
+    </linearGradient>
+    <linearGradient id="spark" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="0.55" stop-color="#E6D4FF"/>
+      <stop offset="1" stop-color="#9FE8FF"/>
+    </linearGradient>
+    <linearGradient id="actionFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFC75A"/>
+      <stop offset="1" stop-color="#FF7A1A"/>
+    </linearGradient>
+
+    <filter id="blur40" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="40"/></filter>
+    <filter id="blur18" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="18"/></filter>
+    <filter id="blur6" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="6"/></filter>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="180%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="22"/>
+      <feOffset dy="26"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.45"/></feComponentTransfer>
+    </filter>
+
+    <clipPath id="squircle"><rect width="1024" height="1024" rx="230"/></clipPath>
+    <clipPath id="capsuleClip"><rect x="236" y="402" width="680" height="220" rx="110"/></clipPath>
+    <clipPath id="actionClip"><rect x="104" y="392" width="76" height="240" rx="38"/></clipPath>
+
+    <path id="sparkPath" d="M0,-1 C0.12,-0.28 0.28,-0.12 1,0 C0.28,0.12 0.12,0.28 0,1 C-0.12,0.28 -0.28,0.12 -1,0 C-0.28,-0.12 -0.12,-0.28 0,-1 Z"/>
+  </defs>
+
+  <g>
+    <!-- background -->
+    <g id="background">
+      <rect width="1024" height="1024" fill="url(#bg)"/>
+      <ellipse cx="600" cy="520" rx="460" ry="300" fill="url(#glowCyan)"/>
+      <ellipse cx="860" cy="250" rx="320" ry="280" fill="url(#glowViolet)"/>
+      <ellipse cx="140" cy="512" rx="210" ry="260" fill="url(#glowOrange)" opacity="0.55"/>
+    </g>
+
+    <!-- action button -->
+    <g id="action">
+      <rect x="104" y="392" width="76" height="240" rx="38" fill="#000" filter="url(#shadow)"/>
+      <ellipse cx="142" cy="512" rx="80" ry="150" fill="#FF9F0A" opacity="0.55" filter="url(#blur40)"/>
+      <rect x="104" y="392" width="76" height="240" rx="38" fill="url(#actionFill)"/>
+      <g clip-path="url(#actionClip)">
+        <rect x="104" y="392" width="76" height="110" rx="38" fill="url(#specular)" opacity="0.8"/>
+      </g>
+      <rect x="105.5" y="393.5" width="73" height="237" rx="36.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+    </g>
+
+    <!-- ripples from button toward island -->
+    <g fill="none" stroke="#FFFFFF" stroke-linecap="round">
+      <path d="M200,462 A70,70 0 0 1 200,562" stroke-width="10" stroke-opacity="0.75"/>
+    </g>
+
+    <!-- glass island capsule -->
+    <g id="island">
+      <rect x="236" y="402" width="680" height="220" rx="110" fill="#000" filter="url(#shadow)"/>
+      <g clip-path="url(#capsuleClip)">
+        <!-- frosted backdrop: blurred copy of background -->
+        <g filter="url(#blur40)">
+          <rect width="1024" height="1024" fill="url(#bg)"/>
+          <ellipse cx="600" cy="520" rx="460" ry="300" fill="url(#glowCyan)"/>
+          <ellipse cx="860" cy="250" rx="320" ry="280" fill="url(#glowViolet)"/>
+        </g>
+        <rect x="236" y="402" width="680" height="220" fill="url(#glassFill)"/>
+        <!-- top specular band -->
+        <rect x="270" y="412" width="612" height="80" rx="40" fill="url(#specular)" opacity="0.55" filter="url(#blur6)"/>
+        <!-- bottom inner light (refraction) -->
+        <ellipse cx="576" cy="626" rx="300" ry="34" fill="#9FE8FF" opacity="0.45" filter="url(#blur18)"/>
+      </g>
+      <rect x="237.5" y="403.5" width="677" height="217" rx="108.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+
+      <!-- waveform -->
+      <g fill="url(#wave)">
+        <g opacity="0.35" filter="url(#blur18)">
+          <rect x="346" y="476" width="28" height="72" rx="14"/><rect x="390" y="446" width="28" height="132" rx="14"/>
+          <rect x="434" y="426" width="28" height="172" rx="14"/><rect x="478" y="456" width="28" height="112" rx="14"/>
+          <rect x="522" y="436" width="28" height="152" rx="14"/><rect x="566" y="466" width="28" height="92" rx="14"/>
+          <rect x="610" y="446" width="28" height="132" rx="14"/><rect x="654" y="476" width="28" height="72" rx="14"/>
+          <rect x="698" y="490" width="28" height="44" rx="14"/>
+        </g>
+        <rect x="346" y="476" width="28" height="72" rx="14"/><rect x="390" y="446" width="28" height="132" rx="14"/>
+        <rect x="434" y="426" width="28" height="172" rx="14"/><rect x="478" y="456" width="28" height="112" rx="14"/>
+        <rect x="522" y="436" width="28" height="152" rx="14"/><rect x="566" y="466" width="28" height="92" rx="14"/>
+        <rect x="610" y="446" width="28" height="132" rx="14"/><rect x="654" y="476" width="28" height="72" rx="14"/>
+        <rect x="698" y="490" width="28" height="44" rx="14"/>
+      </g>
+      <!-- recording dot -->
+      <circle cx="808" cy="512" r="30" fill="#FF453A"/>
+      <circle cx="808" cy="512" r="30" fill="#FF453A" opacity="0.6" filter="url(#blur18)"/>
+      <ellipse cx="800" cy="500" rx="14" ry="9" fill="#FFFFFF" opacity="0.5"/>
+    </g>
+
+    <!-- AI sparkles -->
+    <g id="sparkles">
+      <use href="#sparkPath" transform="translate(842,360) scale(118)" fill="#C9A6FF" opacity="0.8" filter="url(#blur18)"/>
+      <use href="#sparkPath" transform="translate(842,360) scale(108)" fill="url(#spark)"/>
+      <use href="#sparkPath" transform="translate(842,360) scale(108)" fill="none" stroke="#FFFFFF" stroke-opacity="0.9" stroke-width="0.02"/>
+      <use href="#sparkPath" transform="translate(726,286) scale(40)" fill="url(#spark)" opacity="0.9"/>
+      <use href="#sparkPath" transform="translate(930,470) scale(26)" fill="#FFFFFF" opacity="0.75"/>
+    </g>
+  </g>
+</svg>

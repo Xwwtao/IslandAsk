@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><defs>
+  <filter id="sh" x="-30%" y="-30%" width="160%" height="190%"><feGaussianBlur stdDeviation="28"/><feOffset dy="30"/></filter>
+  <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.16"/><stop offset="0.45" stop-color="#fff" stop-opacity="0"/></linearGradient>
+  <linearGradient id="bars" gradientUnits="userSpaceOnUse" x1="340" y1="0" x2="690" y2="0">
+    <stop offset="0" stop-color="#5AC8FA"/><stop offset="0.5" stop-color="#7D7AFF"/><stop offset="1" stop-color="#DA8FFF"/></linearGradient><clipPath id="sq"><rect width="1024" height="1024" rx="230"/></clipPath><linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#E4E6EC"/></linearGradient><linearGradient id="cap" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2C2C30"/><stop offset="1" stop-color="#0A0A0C"/></linearGradient></defs><g clip-path="url(#sq)"><rect width="1024" height="1024" fill="url(#bg)"/>
+  <rect x="172.0" y="364.0" width="680" height="296" rx="148.0" fill="#000" opacity="0.28" filter="url(#sh)"/>
+  <rect x="172.0" y="364.0" width="680" height="296" rx="148.0" fill="url(#cap)"/>
+  <rect x="172.0" y="364.0" width="680" height="296" rx="148.0" fill="url(#sheen)"/>
+  <rect x="173.5" y="365.5" width="677" height="293" rx="146.5" fill="none" stroke="url(#rim)" stroke-width="3"/>
+  <defs><linearGradient id="rim" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.35"/><stop offset="0.5" stop-color="#fff" stop-opacity="0.04"/><stop offset="1" stop-color="#fff" stop-opacity="0.12"/></linearGradient></defs><rect x="338.0" y="476.0" width="44" height="72" rx="22.0" fill="url(#bars)"/><rect x="414.0" y="438.0" width="44" height="148" rx="22.0" fill="url(#bars)"/><rect x="490.0" y="414.0" width="44" height="196" rx="22.0" fill="url(#bars)"/><rect x="566.0" y="438.0" width="44" height="148" rx="22.0" fill="url(#bars)"/><rect x="642.0" y="476.0" width="44" height="72" rx="22.0" fill="url(#bars)"/></g></svg>

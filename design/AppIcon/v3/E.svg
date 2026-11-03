@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><defs>
+<clipPath id="sq"><rect width="1024" height="1024" rx="230"/></clipPath>
+<linearGradient id="ai" gradientUnits="userSpaceOnUse" x1="150" y1="380" x2="880" y2="660">
+  <stop offset="0" stop-color="#FF9F0A"/><stop offset="0.28" stop-color="#FF4F8B"/>
+  <stop offset="0.55" stop-color="#BF5AF2"/><stop offset="0.8" stop-color="#5E8BFF"/><stop offset="1" stop-color="#40E0FF"/></linearGradient>
+<linearGradient id="ai2" gradientUnits="userSpaceOnUse" x1="880" y1="380" x2="150" y2="660">
+  <stop offset="0" stop-color="#FF9F0A"/><stop offset="0.3" stop-color="#FF4F8B"/>
+  <stop offset="0.6" stop-color="#BF5AF2"/><stop offset="1" stop-color="#40C8FF"/></linearGradient>
+<linearGradient id="ink" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#1E1E22"/><stop offset="1" stop-color="#000"/></linearGradient>
+<linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity="0.22"/><stop offset="0.35" stop-color="#fff" stop-opacity="0"/></linearGradient>
+<linearGradient id="sp" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#E2D9FF"/></linearGradient>
+<filter id="b60" x="-50%" y="-80%" width="200%" height="260%"><feGaussianBlur stdDeviation="60"/></filter>
+<filter id="b24" x="-50%" y="-80%" width="200%" height="260%"><feGaussianBlur stdDeviation="24"/></filter>
+<filter id="b6" x="-50%" y="-80%" width="200%" height="260%"><feGaussianBlur stdDeviation="6"/></filter>
+<filter id="goo" x="-20%" y="-40%" width="140%" height="180%">
+  <feGaussianBlur in="SourceGraphic" stdDeviation="22" result="b"/>
+  <feColorMatrix in="b" type="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 40 -18"/>
+</filter>
+</defs><g clip-path="url(#sq)"><rect width="1024" height="1024" fill="#07070B"/>
+<g filter="url(#b60)"><rect x="150" y="402" width="470" height="220" rx="110" fill="url(#ai)"/><circle cx="760" cy="512" r="130" fill="url(#ai2)"/></g>
+<g filter="url(#b24)"><rect x="140" y="392" width="490" height="240" rx="120" fill="url(#ai)"/><circle cx="760" cy="512" r="142" fill="url(#ai2)"/></g>
+<g filter="url(#goo)"><rect x="150" y="402" width="470" height="220" rx="110" fill="#000"/><circle cx="760" cy="512" r="130" fill="#000"/></g>
+<g opacity="0.9"><rect x="150" y="402" width="470" height="220" rx="110" fill="url(#sheen)"/><circle cx="760" cy="512" r="130" fill="url(#sheen)"/></g>
+<rect x="262" y="484.0" width="32" height="56" rx="16.0" fill="url(#ai)"/><rect x="318" y="453.0" width="32" height="118" rx="16.0" fill="url(#ai)"/><rect x="374" y="432.0" width="32" height="160" rx="16.0" fill="url(#ai)"/><rect x="430" y="458.0" width="32" height="108" rx="16.0" fill="url(#ai)"/><rect x="486" y="486.0" width="32" height="52" rx="16.0" fill="url(#ai)"/>
+<path d="M0,-1 C0.1,-0.25 0.25,-0.1 1,0 C0.25,0.1 0.1,0.25 0,1 C-0.1,0.25 -0.25,0.1 -1,0 C-0.25,-0.1 -0.1,-0.25 0,-1 Z" transform="translate(760,512) scale(70)" fill="url(#sp)"/>
+</g></svg>
