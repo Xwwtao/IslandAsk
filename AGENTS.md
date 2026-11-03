@@ -17,7 +17,8 @@
 
 ## 文件放置（与 SPEC 第 3 节不同时，以这里为准）
 
-- 工程使用 Xcode 文件夹同步：在对应文件夹里新建 `.swift` 文件，会自动加入该文件夹所属的 target。
+- 工程使用 Xcode 文件夹同步：在对应文件夹里新建 `.swift` 文件，会自动加入主 App target。
+- `Shared/` 下的文件是在 pbxproj 里逐个登记（membershipExceptions）才属于 widget target 的：新加 Shared 文件时，要告诉我去 Xcode 里勾选 IslandAskWidget 的 target membership。
 - `IslandAsk/Shared/` 同时属于 IslandAsk 和 IslandAskWidget 两个 target。以下文件放在这里：
   - `AskActivityAttributes.swift`
   - `StopAskIntent.swift`
@@ -25,7 +26,14 @@
 - Shared 里的文件也会被 widget 编译。凡是引用主 App 才有的类型（如 `SessionCoordinator`）的代码，必须用 `#if !WIDGET_EXTENSION ... #endif` 包起来；widget target 已定义 `WIDGET_EXTENSION` 编译条件。
 - `AskAboutScreenIntent.swift` 只能放在 `IslandAsk/Intents/`，只属于主 App。
 - Widget 代码放在 `IslandAskWidget/`。Xcode 模板生成的 Live Activity 示例文件，要替换为使用 `Shared/AskActivityAttributes` 的 `AskLiveActivity.swift`，并删除模板自带的 attributes 定义。
-- 其余文件按 SPEC 第 3 节的目录放置。
+- 其余文件按 SPEC 第 3 节的目录放置（第 3 节已按 M3 实际结构更新）。
+- `Config/Secrets.swift` 已废弃（gitignore，可能含明文 Key），不要读取、引用或修改它。API Key 存 Keychain，由设置页填写。
+
+## 大模型调用约定
+
+- 灵动岛链路（Intent 后台）只用快速档：`thinking: disabled`、JSON 模式。不要在后台链路开思考：单次十几秒以上，会被截断或超出后台保活时间（M3 真机已复现）。
+- 深度思考（流式）只在 App 前台使用：会话页的深度回答和追问。
+- 只有 `SessionCoordinator` 写 SwiftData；新增模型字段一律用可选类型，靠自动轻量迁移。
 
 ## 编译检查（每次改完代码必须执行）
 

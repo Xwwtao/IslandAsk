@@ -14,7 +14,7 @@ Nov 1, 2026 · @Wentao Xie
 4. 用户说完（静音自动结束，或点灵动岛上的停止按钮）。
 5. 灵动岛显示「思考中」，后台把截图和问题发给多模态大模型。
 6. 回答返回，灵动岛自动展开几秒，显示 30–40 字的简要回答。
-7. 用户点击灵动岛 → 进入 App 的这条会话页，查看截图、完整回答，并可继续追问。
+7. 用户点击灵动岛 → 进入 App 的这条会话页，查看截图和回答，并可继续追问。问题较复杂时，会话页自动用深度思考流式生成更完整的长回答。
 
 非目标（第一版不做）：锁屏状态下提问、实时连续共享屏幕、语音播报回答、Android 版本。
 
@@ -34,7 +34,10 @@ Nov 1, 2026 · @Wentao Xie
 
 两个附加决策：
 
-- **大模型输出两份内容**：一份不超过 40 字的摘要放进灵动岛，一份完整回答存进 App。
+- **大模型分两档回答**：
+  - 快速档：不开思考，只请求一次，返回 JSON。其中 summary 不超过 40 字，放进灵动岛；answer 是简短完整回答；needs_deep 由模型判断要不要再做深度回答。
+  - 深度档：只在 App 前台的会话页和追问里使用，开思考，流式输出 Markdown 长回答。
+  - 原因：开思考的请求单次要十几秒以上，后台约 30 秒的保活时间不够用；M3 真机测到过「思考用完 max_tokens → 内容为空 → 重试后超时被取消」。
 - **录音结束后要保住进程**：音频会话停止后 App 可能很快被挂起，大模型请求必须包在 `beginBackgroundTask` 里，或者等回答返回后再停止音频会话。
 
 ## 3. 系统架构
@@ -50,30 +53,41 @@ Nov 1, 2026 · @Wentao Xie
 ```
 IslandAsk/                           // 主 App target
 ├── App/
-│   ├── IslandAskApp.swift           // 入口，处理 islandask:// 深链
+│   ├── IslandAskApp.swift           // 入口，处理 islandask:// 深链，回到前台时预热音频会话
+│   ├── AppState.swift               // 导航路径、暂存的深链
 │   └── AppShortcuts.swift           // AppShortcutsProvider
+├── Config/
+│   ├── AppGroup.swift               // App Group 标识与容器路径
+│   └── Secrets.swift                // 已废弃（gitignore），Key 改存 Keychain
 ├── Intents/
-│   ├── AskAboutScreenIntent.swift
-│   ├── StopAskIntent.swift          // 两个 target 共享
-│   └── DismissAskIntent.swift       // 两个 target 共享
+│   └── AskAboutScreenIntent.swift   // 只属于主 App
 ├── Session/
-│   └── SessionCoordinator.swift
+│   ├── SessionCoordinator.swift
+│   └── StreamingReply.swift         // 深度回答流式状态、后台任务封装
 ├── Services/
 │   ├── PermissionManager.swift
+│   ├── SpeechModelManager.swift     // 转录模型状态检查与前台下载
 │   ├── AudioCaptureService.swift
 │   ├── SilenceDetector.swift
 │   ├── TranscriptionService.swift
 │   ├── ScreenshotStore.swift
-│   └── LLMClient.swift
-├── Shared/
-│   └── AskActivityAttributes.swift  // 两个 target 共享
+│   ├── LLMClient.swift
+│   ├── AppSettings.swift            // 设置项（UserDefaults）
+│   └── KeychainStore.swift          // API Key
+├── Shared/                          // 两个 target 共享（在 pbxproj 里逐个文件登记）
+│   ├── AskActivityAttributes.swift  // 含深链 URL 辅助函数
+│   ├── StopAskIntent.swift
+│   └── DismissAskIntent.swift
 ├── Data/
-│   └── Models.swift                 // AskSession, ChatMessage
+│   ├── Models.swift                 // AskSession, ChatMessage
+│   └── AppDatabase.swift            // 共享 ModelContainer（App Group）
 └── UI/
     ├── OnboardingView.swift
     ├── HistoryView.swift
     ├── SessionDetailView.swift
-    └── SettingsView.swift
+    ├── SettingsView.swift
+    ├── MarkdownText.swift           // 轻量 Markdown 块级渲染
+    └── ScreenshotViewer.swift       // 截图全屏缩放
 
 IslandAskWidget/                     // Widget 扩展 target
 ├── IslandAskWidgetBundle.swift
@@ -91,7 +105,7 @@ IslandAskWidget/                     // Widget 扩展 target
 1. Action Button 运行快捷指令「屏幕提问」。
 2. 快捷指令执行「截屏」，得到图片。
 3. 快捷指令调用 `AskAboutScreenIntent` 并传入截图，系统在主 App 进程中执行 `perform()`。
-4. `ScreenshotStore` 把截图存到 App Group 容器，返回文件 URL。
+4. `ScreenshotStore` 把截图存到 App Group 容器的 `sessions/<id>.png`，返回文件 URL。
 5. `SessionCoordinator.start` 依次执行：
    1. 结束上一个仍在显示的 Live Activity。
    2. 用 `Activity.request` 启动新的 Live Activity（phase = listening）。
@@ -101,9 +115,10 @@ IslandAskWidget/                     // Widget 扩展 target
 6. `perform()` 返回，快捷指令结束；App 依靠后台音频模式继续运行。
 7. 转录结果每秒最多更新一次 Live Activity 的 `transcriptTail`。
 8. 静音检测或 `StopAskIntent` 触发 `stopListening`：停止 engine，取最终转录文字，更新 phase = thinking。
-9. 调用 `beginBackgroundTask`，`LLMClient` 发送压缩后的截图和转录文字。
-10. 收到 JSON 后：保存 summary 和 answer → 带 `AlertConfiguration` 更新 phase = answered → 停用音频会话 → `endBackgroundTask`。
-11. 用户点击灵动岛 → 打开 `islandask://session/<id>` → App 显示该会话页，并结束这个 Live Activity。
+9. 调用 `beginBackgroundTask`，`LLMClient` 用快速档发送压缩后的截图和转录文字。
+10. 收到 JSON 后：保存 summary、answer、needs_deep → 带 `AlertConfiguration` 更新 phase = answered → 停用音频会话 → `endBackgroundTask`。
+11. 用户点击灵动岛 → 打开 `islandask://session/<id>` → App 显示该会话页，并结束这个 Live Activity（会话还在录音或思考中时不结束）。
+12. 会话页：needs_deep 不为 false 时，自动用深度档流式生成长回答，结果写入 `deepAnswer`；为 false 时只显示快速回答和一个「深度思考」按钮。
 
 ## 5. 工程配置
 
@@ -119,7 +134,7 @@ IslandAskWidget/                     // Widget 扩展 target
 **Capabilities（两个 target 按需开启）**
 
 - Background Modes → Audio, AirPlay, and Picture in Picture（主 App）
-- App Groups：`group.<bundle-prefix>.islandask`（两个 target 都开，用于共享截图路径和会话数据）
+- App Groups：`group.com.wentao.islandask`（两个 target 都开，用于共享截图、录音和 SwiftData 数据库）
 - Push Notifications：第一版不需要，后续做服务端推送更新时再开
 
 **主 App 的 Info.plist**
@@ -132,7 +147,7 @@ IslandAskWidget/                     // Widget 扩展 target
 | `NSSupportsLiveActivitiesFrequentUpdates` | YES |
 | `CFBundleURLTypes` | URL scheme `islandask`，用于灵动岛点击跳转 |
 
-**共享文件**：`AskActivityAttributes.swift` 和 `StopAskIntent.swift` 必须同时加入两个 target 的 Target Membership。
+**共享文件**：`Shared/` 下的 `AskActivityAttributes.swift`、`StopAskIntent.swift`、`DismissAskIntent.swift` 必须同时加入两个 target 的 Target Membership（工程用文件夹同步，Shared 文件在 pbxproj 里逐个登记）。
 
 **依赖**：只用系统框架（AppIntents、ActivityKit、WidgetKit、AVFoundation、Speech、SwiftData、Vision 可选），不引入第三方库。网络请求用 URLSession。
 
@@ -203,6 +218,13 @@ struct StopAskIntent: LiveActivityIntent {
     func start(sessionID: UUID, screenshotURL: URL?) async throws
     func stopListening(sessionID: String) async   // 用户点停止或静音检测触发
     func cancel(sessionID: String) async          // 没说话、出错
+
+    // App 前台（会话页）使用，不更新灵动岛
+    func startDeepAnswer(sessionID: UUID)                      // 深度档流式长回答
+    func askFollowUp(sessionID: UUID, text: String) async throws
+    func retryAnswer(sessionID: UUID) async                    // 快速档失败后重问
+    func openedSession(id: UUID) async                         // 深链进入，结束对应 Live Activity
+    func deleteSession(id: UUID)
 }
 ```
 
@@ -241,32 +263,59 @@ struct StopAskIntent: LiveActivityIntent {
 
 ### 6.8 截图处理（ScreenshotStore）
 
-- 原图保存到 App Group 容器：`sessions/<sessionID>.png`。
+- 原图保存到 App Group 容器：`sessions/<sessionID>.png`（录音 `sessions/<sessionID>.m4a` 同目录）。数据库里只存相对容器的路径。
 - 发送给大模型前：长边缩放到 1536 px，转 JPEG（质量 0.75），再转 base64。
 - 可选增强（M4）：用 Vision 的文字识别提取截图文字，作为补充上下文一起发送，提高中文小字的识别准确率。
 
 ### 6.9 大模型调用（LLMClient）
 
 ```swift
-protocol LLMProvider {
-    func ask(imageJPEG: Data?, question: String, history: [ChatMessage]) async throws -> LLMAnswer
+struct LLMTurn: Sendable { enum Role { case user, assistant }; let role: Role; let content: String }
+struct LLMAnswer: Codable { let summary: String; let answer: String; var needsDeep: Bool? }
+enum LLMStreamEvent: Sendable { case reasoning(String), content(String) }
+
+protocol LLMProvider: Sendable {
+    // 快速档：灵动岛用
+    func ask(imageJPEG: Data?, question: String, history: [LLMTurn]) async throws -> LLMAnswer
+    // 深度档：会话页和追问用
+    func streamDeepAnswer(imageJPEG: Data?, question: String, history: [LLMTurn]) -> AsyncThrowingStream<LLMStreamEvent, Error>
 }
-struct LLMAnswer: Codable { let summary: String; let answer: String }
 ```
 
-- 第一版实现 `OpenAICompatibleProvider`（baseURL、apiKey、model 可配置），走 `/chat/completions`，图片以 `image_url` 的 data URI 传入。这样可以切换任意支持 OpenAI 兼容格式的视觉模型，例如 GPT 系列、通义千问 VL。
-- 必须选支持图片输入的模型；接入前确认所选服务商的 API 是否接受图片。
-- 设置 `response_format` 为 JSON，超时 30 秒，失败重试 1 次。
-- 原型阶段 API Key 存 Keychain，由设置页填写；正式发布前改为经自己的服务端代理转发，不在 App 里存 Key。
+- history 用值类型 `LLMTurn`，不直接用 `ChatMessage`：`@Model` 不是 Sendable，不能传给跨 actor 的请求。调用方在主线程上用 `AskSession.conversationTurns` 转换（首轮问题 + 首轮回答（优先用深度回答）+ 追问）。
+- 实现 `OpenAICompatibleProvider`（baseURL、apiKey、model 由设置页配置，每次请求重新读），走 `/chat/completions`。图片以 `image_url` 的 data URI 传入，`detail: high`，只放在第一条 user 消息里（DeepSeek 不接受 system/assistant 消息里的图片）。追问沿用同一张截图。
+- 当前接入 DeepSeek `deepseek-flash`（支持图片输入，默认开思考模式）。
+- 原型阶段 API Key 存 Keychain（`AfterFirstUnlockThisDeviceOnly`，保证后台能读），由设置页填写；正式发布前改为经自己的服务端代理转发，不在 App 里存 Key。
 
-系统提示词：
+**快速档**
+
+- `stream: false`，`thinking: disabled`，`response_format: json_object`，`max_tokens: 2048`。
+- 超时 30 秒，可重试的错误（超时、断网、5xx、429、空内容、格式错误）重试 1 次。
+- `finish_reason = length`：报「回答太长被截断」，不重试。
+- 系统提示词：
 
 ```
 你是屏幕助手。用户会给你一张手机截图和一个口语化的问题（来自语音转写，可能有错别字）。请结合截图回答。
-只输出 JSON：{"summary": "...", "answer": "..."}
+只输出 JSON：{"summary": "...", "answer": "...", "needs_deep": false}
 summary：不超过 40 个汉字，直接给结论，不寒暄。
 answer：完整回答，可使用 Markdown。
+needs_deep：true 或 false。answer 已经完整准确回答了问题时为 false；需要逐项识别图中多个细节、多步推理、你没有把握，或 answer 只是概要时为 true。
 如果截图与问题无关或看不清，在 summary 中直接说明。
+```
+
+- summary 超过 40 字时截断加「…」；没有返回 needs_deep 时按 true 处理。
+
+**深度档**
+
+- `stream: true`（SSE），`thinking: enabled`，`reasoning_effort: high`，不用 JSON 模式，不设 `max_tokens`。
+- 思考片段在 `delta.reasoning_content`，正文片段在 `delta.content`。不带 tools 时 API 会忽略历史里的 reasoning_content，所以不回传。
+- 超时：数据包之间最多 60 秒，整次请求最多 300 秒。不自动重试，失败后在会话页手动重新生成。
+- 系统提示词：
+
+```
+你是屏幕助手。用户会给你一张手机截图和一个问题（首轮问题来自语音转写，可能有错别字）。请结合截图仔细分析后详细回答。
+直接输出回答正文，使用 Markdown（可用标题、列表、粗体），不要输出 JSON，不要寒暄。
+如果截图与问题无关或看不清，直接说明。
 ```
 
 ### 6.10 Live Activity（AskActivityAttributes + AskLiveActivity）
@@ -304,7 +353,7 @@ listening 布局按 M1 真机反馈调整，原因：
 
 - 转录更新节流为每秒最多 1 次（第一条立即推送）。
 - 进入 answered 时，带 `AlertConfiguration` 更新，使展开态自动弹出几秒。
-- 整个 Live Activity 设置 `widgetURL(islandask://session/<sessionID>)`，点击跳到会话页。
+- 锁屏视图和 `DynamicIsland` 都设置 `widgetURL(islandask://session/<sessionID>)`，点击跳到会话页。
 - answered 状态保持显示，直到用户点关闭、打开 App 查看这条会话，或开始下一次提问时再结束。
 - 锁屏视图与展开态内容一致。
 
@@ -312,26 +361,46 @@ listening 布局按 M1 真机反馈调整，原因：
 
 ```swift
 @Model final class AskSession {
-    var id: UUID; var createdAt: Date
-    var screenshotPath: String?
+    @Attribute(.unique) var id: UUID; var createdAt: Date
+    var screenshotPath: String?   // 相对 App Group 容器的路径：sessions/<id>.png
     var transcript: String
-    var summary: String?; var answer: String?
-    var status: String          // listening / thinking / answered / failed
-    var messages: [ChatMessage] // App 内追问记录
+    var summary: String?; var answer: String?   // 快速档
+    var status: String            // listening / thinking / answered / failed
+    var errorMessage: String?     // failed 的原因
+    var needsDeepAnswer: Bool?    // 快速档判断；nil 按 true 处理
+    var deepAnswer: String?; var deepReasoning: String?; var deepError: String?   // 深度档
+    @Relationship(deleteRule: .cascade, inverse: \ChatMessage.session)
+    var messages: [ChatMessage]   // App 内追问记录（不含首轮），显示时按 createdAt 排序
 }
-@Model final class ChatMessage { var role: String; var content: String; var createdAt: Date }
+@Model final class ChatMessage {
+    var role: String; var content: String; var createdAt: Date
+    var reasoning: String?        // assistant 的思考过程
+    var session: AskSession?
+}
 ```
 
-存储位置用 App Group 容器（`ModelConfiguration(groupContainer:)`），方便以后 widget 读取。
+- 存储位置用 App Group 容器（`ModelConfiguration(groupContainer: .identifier("group.com.wentao.islandask"))`），方便以后 widget 读取；容器不可用时退回默认位置并记 error 日志。
+- 只有 `SessionCoordinator` 写数据库，UI 用 `@Query` 读。流式生成中的内容只放在内存（`StreamingReplyStore`），结束后再一次性写库。
+- 新增字段一律用可选类型，靠 SwiftData 自动轻量迁移。
 
 ### 6.12 App 界面
 
 | 页面 | 内容 |
 | --- | --- |
 | 首次引导 | 权限申请、模型下载、快捷指令和 Action Button 设置指引 |
-| 历史列表 | 按时间倒序，每条显示截图缩略图、问题、摘要 |
-| 会话页 | 截图（可放大）、问题原文、完整回答（Markdown 渲染）、底部追问输入框；追问沿用同一张截图和上下文 |
-| 设置 | API 地址、Key、模型名、识别语言、静音阈值 |
+| 历史列表 | 按时间倒序，每条显示截图缩略图、问题、摘要或状态；左滑删除（连同截图和录音） |
+| 会话页 | 截图（可放大）、问题原文、摘要、回答（Markdown 渲染）、底部追问输入框；追问沿用同一张截图和上下文 |
+| 设置 | API 地址、Key、模型名、识别语言（中文 / 英文，切换前在前台下载模型）、静音阈值、权限与环境状态 |
+
+会话页的回答区：
+
+- needs_deep 不为 false：进入页面自动开始深度回答（每次进入最多自动触发一次）。生成中显示「深度思考中… N 秒」，思考过程实时展开；正文开始输出后自动收起，长回答逐字显示。完成后思考过程留在折叠块里。
+- needs_deep 为 false：只显示快速回答，下面一个「深度思考」按钮，手动触发。
+- 深度回答失败（如切到后台被中断）：显示快速回答 + 错误说明 +「重新生成深度回答」。
+- 快速档失败且有问题文字：显示「重新提问」，用快速档重问，不更新灵动岛。
+- 追问：深度思考 + 流式，失败时撤回这条追问并把文字放回输入框；生成中禁用输入框。
+- 深度回答由 `SessionCoordinator` 持有，离开会话页也继续；切到后台时靠后台任务保活约 30 秒，到期取消。
+- 右上角可播放原始录音，便于排查转录问题。
 
 快捷指令设置指引（引导页里用图文展示）：
 
@@ -358,6 +427,7 @@ listening 布局按 M1 真机反馈调整，原因：
 4. **M3 App 内追问（3–4 天）**
    - 内容：SwiftData 存储、历史列表、会话页、追问、设置页、灵动岛点击跳转。
    - 完成标准：点灵动岛进入对应会话页，能基于同一截图继续追问。
+   - 追加（M3 真机测试后）：快速档 / 深度档两档回答、深度回答流式显示、needs_deep 判断。
 5. **M4 打磨（持续）**
    - 内容：Vision 文字识别增强、错误提示文案、引导页图文、快捷指令分享链接、服务端代理。
 
@@ -403,6 +473,7 @@ listening 布局按 M1 真机反馈调整，原因：
 | 以上都不行 | — | 路线 C：Intent 打开 App，在前台开始录音，用户再划回原 App（ChatGPT 的做法） |
 | 大模型回答慢 | 换更快的模型；截图压到更小 | 先推送「思考中」，回答分两步：先出摘要，完整回答后台继续生成 |
 | 转录模型不支持中文或未下载 | 检查 `SpeechTranscriber` 支持的 locale | 回退 `SFSpeechRecognizer` |
+| 模型默认开思考，后台请求被截断或超时 | 日志看 `finish_reason=length`、后台任务是否过期 | 灵动岛链路显式关闭思考；需要思考的回答放到 App 前台的深度档 |
 
 路线 B 与主方案共用截图、大模型、Live Activity 回答这三部分，切换时只需替换录音和转录模块。
 
