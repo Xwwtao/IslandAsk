@@ -2,7 +2,7 @@
 //  OnboardingView.swift
 //  IslandAsk
 //
-//  首次引导（SPEC 第 6.1 / 6.12 节）：麦克风 → 语音识别 → zh-CN 转录模型（只在前台下载）→
+//  首次引导（SPEC 第 6.1 / 6.12 节）：麦克风 → 语音识别 → 当前识别语言的转录模型（只在前台下载）→
 //  实时活动开关检查 → 快捷指令设置指引。
 //
 //  模型状态是 unsupported 时允许继续，由 TranscriptionService 回退到系统语音识别（M1 第 2 步），
@@ -45,18 +45,15 @@ struct OnboardingView: View {
                 .padding(.horizontal, 20)
                 .padding(.vertical, 16)
             }
-            .background(Color(uiColor: .systemGroupedBackground))
-            .safeAreaInset(edge: .bottom) { footer }
+            .background(Theme.Colors.pageBackground)
+            .safeAreaBar(edge: .bottom) { footer }
             .navigationTitle("准备 IslandAsk")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
+                ToolbarItem(placement: .primaryAction) {
+                    Button("重新检查", systemImage: "arrow.clockwise") {
                         Task { await model.refreshWhenForeground() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
                     }
-                    .accessibilityLabel("重新检查")
                 }
             }
             .task { await model.prepare() }
@@ -77,25 +74,29 @@ struct OnboardingView: View {
     // MARK: - Sections
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             Image(systemName: "waveform.badge.mic")
-                .font(.system(size: 34, weight: .semibold))
+                .font(.largeTitle)
                 .foregroundStyle(.tint)
-            VStack(alignment: .leading, spacing: 3) {
+                .symbolEffect(.variableColor.iterative, options: .repeating.speed(0.5))
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 4) {
                 Text("开始使用 IslandAsk")
-                    .font(.title3.bold())
-                Text("完成下面几步后，按下 Action Button 就能在灵动岛里语音提问。")
+                    .font(.title2.bold())
+                Text("完成下面几步后，按下操作按钮就能在灵动岛里语音提问。进入 App 后记得在设置里填写 API Key。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
+        .padding(.bottom, 4)
     }
 
     private var permissionsCard: some View {
-        card("权限") {
+        card("权限", systemName: "hand.raised.fill", color: .blue, isDone: model.microphoneGranted && model.speechGranted) {
             VStack(alignment: .leading, spacing: 12) {
                 permissionRow(
                     icon: "mic.fill",
+                    color: .red,
                     title: "麦克风",
                     granted: model.microphoneGranted,
                     denied: model.microphoneStatus == .denied
@@ -104,11 +105,11 @@ struct OnboardingView: View {
                         Button("授权") {
                             Task { await model.requestMicrophone() }
                         }
-                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.borderedProminent)
                     } else if model.microphoneStatus == .denied,
                               let url = PermissionManager.appSettingsURL {
                         Link("去设置", destination: url)
-                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.bordered)
                     }
                 }
 
@@ -116,6 +117,7 @@ struct OnboardingView: View {
 
                 permissionRow(
                     icon: "waveform",
+                    color: .orange,
                     title: "语音识别",
                     granted: model.speechGranted,
                     denied: model.speechStatus == .denied || model.speechStatus == .restricted
@@ -124,11 +126,11 @@ struct OnboardingView: View {
                         Button("授权") {
                             Task { await model.requestSpeech() }
                         }
-                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.borderedProminent)
                     } else if (model.speechStatus == .denied || model.speechStatus == .restricted),
                               let url = PermissionManager.appSettingsURL {
                         Link("去设置", destination: url)
-                            .font(.caption.weight(.semibold))
+                            .buttonStyle(.bordered)
                     }
                 }
             }
@@ -136,46 +138,58 @@ struct OnboardingView: View {
     }
 
     private var modelCard: some View {
-        card("转录模型（zh-CN）") {
+        card(
+            "转录模型（\(AppSettings.recognitionLanguage.displayName)）",
+            systemName: "arrow.down.circle.fill",
+            color: .indigo,
+            isDone: model.modelStatus == .installed || model.modelStatus == .unsupported
+        ) {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 12) {
                     Image(systemName: model.modelIcon)
+                        .font(.title3)
                         .foregroundStyle(model.modelStatusColor)
+                        .contentTransition(.symbolEffect(.replace))
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Apple 语音转录模型")
                             .font(.subheadline.weight(.medium))
                         Text(model.modelStatusText)
-                            .font(.caption)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
                 }
+                .accessibilityElement(children: .combine)
 
                 if model.isDownloading {
-                    ProgressView(value: model.downloadProgress)
-                    Text("正在下载 \(Int((model.downloadProgress * 100).rounded()))%")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    ProgressView(value: model.downloadProgress) {
+                        Text("正在下载 \(Int((model.downloadProgress * 100).rounded()))%")
+                            .font(.footnote)
+                            .monospacedDigit()
+                    }
+                    .tint(.indigo)
                     Text("下载只能在 App 前台进行，请保持当前页面打开。")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else if model.modelStatus == .needsDownload, model.modelChecked {
-                    Button("下载模型") {
+                    Button("下载模型", systemImage: "arrow.down.circle") {
                         Task { await model.downloadModelIfNeeded() }
                     }
-                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.borderedProminent)
+                    .tint(.indigo)
                     Text("未安装模型时无法使用 Apple 语音转录。")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else if model.modelStatus == .unsupported {
                     Text("当前设备/语言不支持 Apple 转录模型，将自动回退到系统语音识别（SFSpeechRecognizer）。")
-                        .font(.caption2)
+                        .font(.footnote)
                         .foregroundStyle(.secondary)
                 } else if !model.modelChecked {
                     HStack(spacing: 6) {
                         ProgressView()
                         Text("正在检查模型…")
-                            .font(.caption2)
+                            .font(.footnote)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -184,10 +198,12 @@ struct OnboardingView: View {
     }
 
     private var liveActivityCard: some View {
-        card("实时活动") {
+        card("实时活动", systemName: "platter.filled.top.iphone", color: .green, isDone: model.liveActivitiesEnabled) {
             HStack(spacing: 12) {
                 Image(systemName: model.liveActivitiesEnabled ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                    .font(.title3)
                     .foregroundStyle(model.liveActivitiesEnabled ? Color.green : Color.orange)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("灵动岛显示")
                         .font(.subheadline.weight(.medium))
@@ -196,26 +212,21 @@ struct OnboardingView: View {
                             ? "已开启"
                             : "被关闭，触发时看不到灵动岛；请到系统设置里打开"
                     )
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
                 if !model.liveActivitiesEnabled, let url = PermissionManager.appSettingsURL {
                     Link("去设置", destination: url)
-                        .font(.caption.weight(.semibold))
+                        .buttonStyle(.bordered)
                 }
             }
         }
     }
 
     private var shortcutCard: some View {
-        card("快捷指令设置") {
-            VStack(alignment: .leading, spacing: 8) {
-                shortcutLine(1, "打开快捷指令 App，新建快捷指令，命名为「屏幕提问」。")
-                shortcutLine(2, "添加动作「截屏」。")
-                shortcutLine(3, "添加动作「对屏幕提问」，把「截图」参数设为上一步的「截屏」结果。")
-                shortcutLine(4, "进入 设置 → 操作按钮 → 快捷指令，选择「屏幕提问」。")
-            }
+        card("快捷指令设置", systemName: "square.2.layers.3d", color: .pink, isDone: false) {
+            ShortcutGuideView()
         }
     }
 
@@ -226,94 +237,110 @@ struct OnboardingView: View {
                 onComplete()
             } label: {
                 Text("开始使用")
+                    .bold()
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(.glassProminent)
+            .controlSize(.extraLarge)
             .disabled(!model.canContinue)
+            .sensoryFeedback(.success, trigger: model.canContinue) { _, new in new }
 
             Text(model.hintText)
-                .font(.caption2)
+                .font(.footnote)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .contentTransition(.opacity)
+                .animation(.default, value: model.hintText)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 12)
-        .background(.regularMaterial)
     }
 
     // MARK: - Components
 
+    /// 卡片标题配设置 App 风格的图标，和设置页保持一致；这一步完成后标题右侧出现绿色对勾。
     private func card<Content: View>(
         _ title: String,
+        systemName: String,
+        color: Color,
+        isDone: Bool,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(title)
-                .font(.headline)
+            HStack(spacing: 10) {
+                SettingsIcon(systemName: systemName, color: color)
+                Text(title)
+                    .font(.headline)
+                Spacer(minLength: 0)
+                if isDone {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.title3)
+                        .foregroundStyle(.green)
+                        .transition(.scale.combined(with: .opacity))
+                        .accessibilityLabel("已完成")
+                }
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
             content()
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            Color(uiColor: .secondarySystemGroupedBackground),
-            in: RoundedRectangle(cornerRadius: 14)
-        )
+        .cardStyle()
+        .animation(Theme.Motion.quick, value: isDone)
     }
 
     private func permissionRow<Accessory: View>(
         icon: String,
+        color: Color,
         title: String,
         granted: Bool,
         denied: Bool,
         @ViewBuilder accessory: () -> Accessory
     ) -> some View {
         HStack(spacing: 12) {
-            Image(systemName: granted ? "checkmark.circle.fill" : (denied ? "xmark.circle.fill" : "circle.dashed"))
-                .foregroundStyle(granted ? Color.green : (denied ? Color.red : Color.orange))
+            SettingsIcon(systemName: icon, color: color)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title)
                     .font(.subheadline.weight(.medium))
                 Text(granted ? "已授权" : (denied ? "已拒绝，请在系统设置里打开" : "尚未授权"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.footnote)
+                    .foregroundStyle(granted ? Color.secondary : (denied ? Color.red : Color.orange))
             }
             Spacer()
-            accessory()
+            if granted {
+                // 与设置页状态区一致：正常只显示绿色对勾。
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.green)
+                    .transition(.scale.combined(with: .opacity))
+                    .accessibilityHidden(true)
+            } else {
+                accessory()
+                    .buttonBorderShape(.capsule)
+            }
         }
-    }
-
-    private func shortcutLine(_ index: Int, _ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Text("\(index)")
-                .font(.caption2.bold())
-                .frame(width: 18, height: 18)
-                .background(Color.secondary.opacity(0.15), in: Circle())
-            Text(text)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-        }
+        .animation(Theme.Motion.quick, value: granted)
     }
 
     private func errorCard(_ message: String) -> some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
                 .foregroundStyle(.red)
-            VStack(alignment: .leading, spacing: 6) {
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 8) {
                 Text(message)
-                    .font(.caption)
+                    .font(.footnote)
                     .foregroundStyle(.red)
                 if model.modelStatus == .needsDownload || model.modelStatus == .downloading {
-                    Button("重试下载") {
+                    Button("重试下载", systemImage: "arrow.clockwise") {
                         Task { await model.downloadModelIfNeeded() }
                     }
-                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
+                    .buttonBorderShape(.capsule)
+                    .tint(.red)
                 }
             }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+        .cardStyle(tint: .red)
     }
 }
 
