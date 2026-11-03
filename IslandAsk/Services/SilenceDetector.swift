@@ -12,7 +12,7 @@
 //
 //  为什么不再只看音量：环境噪音持续高于阈值时，「说完」永远不成立、「没听到」也不触发（真机已复现）。
 //
-//  所有阈值集中放在 SilenceDetectionConfiguration，M3 设置页再接 UI（现在不拆设置项）。
+//  所有阈值集中放在 SilenceDetectionConfiguration，值来自设置页（AppSettings）；每次会话开始时取一次快照。
 //  音频数据在音频线程上同步进来，转录文字从主线程进来，状态用锁保护；事件只发一次，由调度器决定走 stop 还是 cancel。
 //
 
@@ -20,19 +20,31 @@ import AVFAudio
 import Foundation
 import os
 
-// MARK: - 配置（全部阈值集中在这里，M3 设置页直接读这里）
+// MARK: - 配置（全部阈值集中在这里；会话开始时从设置页读一次快照，音频线程不读 UserDefaults）
 
-nonisolated enum SilenceDetectionConfiguration {
+nonisolated struct SilenceDetectionConfiguration: Sendable {
     /// 音量辅助判断：RMS 高于该值（dB）算有声音，用于刷新「最后有声音的时刻」。
-    static let speechEndRMSDB: Float = -45
+    var speechEndRMSDB: Float
     /// 已开口后，音量连续低于 speechEndRMSDB 多久算说完。
-    static let endSilenceDuration: Duration = .milliseconds(1500)
+    var endSilenceDuration: Duration
     /// 已开口后，转录文字连续多久没变化算说完。
-    static let transcriptStableDuration: Duration = .milliseconds(1500)
+    var transcriptStableDuration: Duration
     /// 一直没有转录文字的超时。
-    static let noSpeechTimeout: Duration = .seconds(6)
+    var noSpeechTimeout: Duration
     /// 最长录音时间。
-    static let maxRecordingDuration: Duration = .seconds(60)
+    var maxRecordingDuration: Duration
+
+    /// 固定用 SPEC 第 6.7 节的默认值：UI 优化时去掉了设置页里的阈值调节（看起来太复杂）。
+    static var current: SilenceDetectionConfiguration {
+        typealias Defaults = AppSettings.SilenceDefaults
+        return SilenceDetectionConfiguration(
+            speechEndRMSDB: Float(Defaults.speechEndRMSDB),
+            endSilenceDuration: .milliseconds(Int(Defaults.endSilenceSeconds * 1000)),
+            transcriptStableDuration: .milliseconds(Int(Defaults.transcriptStableSeconds * 1000)),
+            noSpeechTimeout: .milliseconds(Int(Defaults.noSpeechTimeoutSeconds * 1000)),
+            maxRecordingDuration: .milliseconds(Int(Defaults.maxRecordingSeconds * 1000))
+        )
+    }
 }
 
 // MARK: - 事件
@@ -66,10 +78,18 @@ nonisolated final class SilenceDetector: AudioBufferConsumer, @unchecked Sendabl
 
     private let clock = ContinuousClock()
     private let state = OSAllocatedUnfairLock(initialState: State())
+    private let configuration: SilenceDetectionConfiguration
     private let onEvent: @MainActor @Sendable (SilenceDetectorEvent) -> Void
 
-    init(onEvent: @escaping @MainActor @Sendable (SilenceDetectorEvent) -> Void) {
+    init(
+        configuration: SilenceDetectionConfiguration = .current,
+        onEvent: @escaping @MainActor @Sendable (SilenceDetectorEvent) -> Void
+    ) {
+        self.configuration = configuration
         self.onEvent = onEvent
+        Self.makeLogger().info(
+            "silence detector config rmsDB=\(configuration.speechEndRMSDB, privacy: .public) endSilence=\(String(describing: configuration.endSilenceDuration), privacy: .public) stable=\(String(describing: configuration.transcriptStableDuration), privacy: .public) noSpeech=\(String(describing: configuration.noSpeechTimeout), privacy: .public) max=\(String(describing: configuration.maxRecordingDuration), privacy: .public)"
+        )
     }
 
     /// 转录有更新时调用（任意线程）。text 为 finalized + volatile 的完整显示文字；
@@ -98,6 +118,7 @@ nonisolated final class SilenceDetector: AudioBufferConsumer, @unchecked Sendabl
     func consume(buffer: AVAudioPCMBuffer) {
         let now = clock.now
         let levelDB = Self.rmsDB(of: buffer)
+        let configuration = self.configuration
 
         let decision: (event: SilenceDetectorEvent, reason: Reason, sinceTextChange: Duration?)? = state.withLock { state in
             guard !state.hasEmitted else { return nil }
@@ -106,7 +127,7 @@ nonisolated final class SilenceDetector: AudioBufferConsumer, @unchecked Sendabl
                 state.startedAt = now
                 state.lastVoiceAt = now
             }
-            if levelDB > SilenceDetectionConfiguration.speechEndRMSDB {
+            if levelDB > configuration.speechEndRMSDB {
                 state.lastVoiceAt = now
             }
 
@@ -114,21 +135,21 @@ nonisolated final class SilenceDetector: AudioBufferConsumer, @unchecked Sendabl
             let sinceTextChange = state.lastTranscriptChangeAt.map { now - $0 }
 
             if state.hasSpoken {
-                if let sinceTextChange, sinceTextChange >= SilenceDetectionConfiguration.transcriptStableDuration {
+                if let sinceTextChange, sinceTextChange >= configuration.transcriptStableDuration {
                     state.hasEmitted = true
                     return (.finishedSpeaking, .transcriptStable, sinceTextChange)
                 }
                 if let lastVoiceAt = state.lastVoiceAt,
-                   now - lastVoiceAt >= SilenceDetectionConfiguration.endSilenceDuration {
+                   now - lastVoiceAt >= configuration.endSilenceDuration {
                     state.hasEmitted = true
                     return (.finishedSpeaking, .quiet, sinceTextChange)
                 }
-            } else if now - startedAt >= SilenceDetectionConfiguration.noSpeechTimeout {
+            } else if now - startedAt >= configuration.noSpeechTimeout {
                 state.hasEmitted = true
                 return (.noSpeechTimeout, .noSpeech, sinceTextChange)
             }
 
-            if now - startedAt >= SilenceDetectionConfiguration.maxRecordingDuration {
+            if now - startedAt >= configuration.maxRecordingDuration {
                 state.hasEmitted = true
                 return (.maxDurationReached, .maxDuration, sinceTextChange)
             }

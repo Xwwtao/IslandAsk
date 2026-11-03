@@ -2,7 +2,8 @@
 //  SpeechModelManager.swift
 //  IslandAsk
 //
-//  zh-CN SpeechTranscriber 模型资产的状态检查与前台下载（SPEC 第 6.1 节第 3 步）。
+//  SpeechTranscriber 模型资产的状态检查与前台下载（SPEC 第 6.1 节第 3 步）。
+//  识别语言来自设置页（AppSettings.recognitionLanguage）；设置页切换语言前，用 locale 参数先下载目标语言的模型。
 //
 //  约束：模型下载只能在 App 前台做，不能放进 Intent。Intent 链路（TranscriptionService）
 //  只调用 status() 判断，未安装就回退 SFSpeechRecognizer，绝不在这里触发下载。
@@ -30,12 +31,12 @@ enum SpeechModelManager {
         )
     }
 
-    /// 转录语言固定 zh-CN；M3 设置页再开放选择（SPEC 第 6.12 节）。
-    nonisolated static let locale = Locale(identifier: "zh_CN")
+    /// 当前识别语言（SPEC 第 6.12 节：设置页可选）。每次会话开始时读取。
+    nonisolated static var locale: Locale { AppSettings.recognitionLanguage.locale }
 
     /// 统一的转录器配置：volatileResults + fastResults（= Apple 的 progressiveTranscription 预设），
     /// 前者给实时临时结果，后者用更小 context window 降低首条结果的延迟（SPEC 第 6.6 节）。
-    nonisolated static func makeTranscriber() -> SpeechTranscriber {
+    nonisolated static func makeTranscriber(locale: Locale = SpeechModelManager.locale) -> SpeechTranscriber {
         SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
@@ -45,41 +46,42 @@ enum SpeechModelManager {
     }
 
     /// 检查模型状态。不触发下载，可在后台/Intent 链路调用。
-    nonisolated static func status() async -> SpeechModelStatus {
+    nonisolated static func status(locale: Locale = SpeechModelManager.locale) async -> SpeechModelStatus {
         let logger = makeLogger()
-        guard await isSupportedLocale() else {
-            logger.notice("zh-CN speech transcriber locale unsupported")
+        guard await isSupportedLocale(locale) else {
+            logger.notice("speech transcriber locale unsupported locale=\(locale.identifier, privacy: .public)")
             return .unsupported
         }
 
-        let transcriber = makeTranscriber()
+        let transcriber = makeTranscriber(locale: locale)
         let rawStatus = await AssetInventory.status(forModules: [transcriber])
         let mapped = map(rawStatus)
         logger.info(
-            "speech model status=\(String(describing: mapped), privacy: .public) raw=\(String(describing: rawStatus), privacy: .public)"
+            "speech model status=\(String(describing: mapped), privacy: .public) locale=\(locale.identifier, privacy: .public) raw=\(String(describing: rawStatus), privacy: .public)"
         )
         return mapped
     }
 
-    nonisolated static func isSupportedLocale() async -> Bool {
+    nonisolated static func isSupportedLocale(_ locale: Locale = SpeechModelManager.locale) async -> Bool {
         await SpeechTranscriber.supportedLocale(equivalentTo: locale) != nil
     }
 
-    /// 确保 zh-CN 模型已安装；仅允许在 App 前台调用（引导页）。
+    /// 确保指定语言的模型已安装；仅允许在 App 前台调用（引导页、设置页）。
     /// - Returns: true = 已安装；false = 该 locale 不支持（调用方应使用回退引擎）。
     @MainActor
     @discardableResult
     static func ensureInstalled(
+        locale: Locale = SpeechModelManager.locale,
         progress: @escaping @MainActor @Sendable (Double) -> Void
     ) async throws -> Bool {
         let logger = makeLogger()
-        guard await isSupportedLocale() else {
+        guard await isSupportedLocale(locale) else {
             logger.notice("speech model install skipped: locale unsupported")
             return false
         }
 
-        let transcriber = makeTranscriber()
-        let current = await status()
+        let transcriber = makeTranscriber(locale: locale)
+        let current = await status(locale: locale)
         switch current {
         case .installed:
             progress(1)
@@ -90,10 +92,10 @@ enum SpeechModelManager {
             break
         }
 
-        logger.info("requesting speech model installation request")
+        logger.info("requesting speech model installation request locale=\(locale.identifier, privacy: .public)")
         guard let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) else {
             // 文档：当前状态是 .installed 时返回 nil，表示无需下载。
-            let after = await status()
+            let after = await status(locale: locale)
             logger.info("speech model installation request is nil status=\(String(describing: after), privacy: .public)")
             if after == .installed {
                 progress(1)
@@ -123,7 +125,7 @@ enum SpeechModelManager {
         progressTask.cancel()
         progress(1)
 
-        let after = await status()
+        let after = await status(locale: locale)
         guard after == .installed else {
             logger.error("speech model installed but status=\(String(describing: after), privacy: .public)")
             throw SpeechModelError.installDidNotComplete
