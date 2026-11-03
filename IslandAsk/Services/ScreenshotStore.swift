@@ -2,8 +2,8 @@
 //  ScreenshotStore.swift
 //  IslandAsk
 //
-//  M0 版截图存储：先存 App 自己的 Documents/sessions/（暂时没有 App Group）。
-//  M2/M3 开启 App Group 后把路径切到 group 容器，对外接口不变（SPEC 第 6.8 / 第 4 节第 4 步）。
+//  截图存储：App Group 容器的 sessions/<sessionID>.png（SPEC 第 6.8 / 第 4 节第 4 步）。
+//  录音 m4a 也放在同一目录。数据库里只存相对容器的路径（relativePath），用 url(forRelativePath:) 还原。
 //
 
 import AppIntents
@@ -23,14 +23,41 @@ nonisolated enum ScreenshotStore {
         )
     }
 
-    /// 会话产物目录：Documents/sessions/。调用方负责创建，这里保证存在。
+    static let sessionsDirectoryName = "sessions"
+
+    /// 会话产物目录：<App Group 容器>/sessions/。调用方负责创建，这里保证存在。
     static func sessionsDirectory() throws -> URL {
-        guard let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
-            throw ScreenshotStoreError.documentsDirectoryUnavailable
-        }
-        let directory = documents.appendingPathComponent("sessions", isDirectory: true)
+        let directory = try AppGroup.containerURL()
+            .appendingPathComponent(sessionsDirectoryName, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
+    }
+
+    /// 存进数据库的截图路径（相对 App Group 容器）。
+    static func relativePath(for url: URL) -> String {
+        "\(sessionsDirectoryName)/\(url.lastPathComponent)"
+    }
+
+    static func url(forRelativePath path: String) -> URL? {
+        try? AppGroup.containerURL().appendingPathComponent(path)
+    }
+
+    /// 删除会话时一并删除截图和录音（历史列表左滑删除）。
+    static func removeArtifacts(sessionID: UUID) {
+        let logger = makeLogger()
+        guard let directory = try? sessionsDirectory() else { return }
+        for ext in ["png", "m4a"] {
+            let url = directory.appendingPathComponent(sessionID.uuidString).appendingPathExtension(ext)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                try FileManager.default.removeItem(at: url)
+                logger.info("artifact removed session=\(sessionID.uuidString, privacy: .public) ext=\(ext, privacy: .public)")
+            } catch {
+                logger.error(
+                    "artifact remove failed session=\(sessionID.uuidString, privacy: .public) ext=\(ext, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+            }
+        }
     }
 
     static func imageFileURL(sessionID: UUID) throws -> URL {
@@ -117,6 +144,18 @@ nonisolated enum ScreenshotStore {
             "upload jpeg ready session=\(sessionID.uuidString, privacy: .public) size=\(image.width, privacy: .public)x\(image.height, privacy: .public) bytes=\(data.count, privacy: .public)"
         )
         return data
+    }
+
+    /// 列表缩略图：按目标尺寸解码，不解整张原图。调用方应在主线程之外执行。
+    static func thumbnail(url: URL, maxPixelSize: Int) -> UIImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
     }
 
     private static let uploadMaxPixelSize = 1536

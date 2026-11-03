@@ -1,0 +1,92 @@
+//
+//  AppSettings.swift
+//  IslandAsk
+//
+//  设置页的持久化（SPEC 第 6.12 节）：API 地址、模型名、截图文字识别开关、识别语言存 UserDefaults；
+//  API Key 不在这里，存 Keychain（KeychainStore）。
+//  各模块在每次会话开始时读一次快照，设置改完下一次提问生效。
+//
+
+import Foundation
+
+nonisolated enum AppSettings {
+
+    // MARK: - 识别语言
+
+    enum RecognitionLanguage: String, CaseIterable, Identifiable, Sendable {
+        case chinese = "zh_CN"
+        case english = "en_US"
+
+        var id: String { rawValue }
+
+        var locale: Locale { Locale(identifier: rawValue) }
+
+        var displayName: String {
+            switch self {
+            case .chinese: return "中文（普通话）"
+            case .english: return "English (US)"
+            }
+        }
+    }
+
+    // MARK: - 默认值
+
+    static let defaultBaseURL = "https://api.deepseek.com"
+    static let defaultModel = "deepseek-flash"
+
+    /// SPEC 第 6.7 节的阈值。设置页已不再提供调节，SilenceDetector 直接用这些常量；
+    /// 以前存在 UserDefaults 里的 silence.* 值不再读取。
+    enum SilenceDefaults {
+        static let speechEndRMSDB: Double = -45
+        static let endSilenceSeconds: Double = 1.5
+        static let transcriptStableSeconds: Double = 1.5
+        static let noSpeechTimeoutSeconds: Double = 6
+        static let maxRecordingSeconds: Double = 60
+    }
+
+    // MARK: - Keys
+
+    enum Key {
+        static let baseURL = "llm.baseURL"
+        static let model = "llm.model"
+        static let recognitionLanguage = "speech.recognitionLanguage"
+        static let screenTextRecognition = "llm.screenTextRecognition"
+    }
+
+    private static var defaults: UserDefaults { .standard }
+
+    // MARK: - 大模型
+
+    static var baseURLString: String {
+        get { nonEmptyString(Key.baseURL) ?? defaultBaseURL }
+        set { defaults.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Key.baseURL) }
+    }
+
+    static var model: String {
+        get { nonEmptyString(Key.model) ?? defaultModel }
+        set { defaults.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Key.model) }
+    }
+
+    /// M4：截图文字识别增强（Vision OCR 结果随截图一起发给大模型），默认开。
+    static var screenTextRecognitionEnabled: Bool {
+        get { defaults.object(forKey: Key.screenTextRecognition) == nil ? true : defaults.bool(forKey: Key.screenTextRecognition) }
+        set { defaults.set(newValue, forKey: Key.screenTextRecognition) }
+    }
+
+    // MARK: - 识别语言
+
+    static var recognitionLanguage: RecognitionLanguage {
+        get {
+            defaults.string(forKey: Key.recognitionLanguage).flatMap(RecognitionLanguage.init(rawValue:)) ?? .chinese
+        }
+        set { defaults.set(newValue.rawValue, forKey: Key.recognitionLanguage) }
+    }
+
+    // MARK: - Helpers
+
+    private static func nonEmptyString(_ key: String) -> String? {
+        guard let value = defaults.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else { return nil }
+        return value
+    }
+}
