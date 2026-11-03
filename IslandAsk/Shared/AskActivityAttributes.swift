@@ -28,8 +28,33 @@ nonisolated struct AskActivityAttributes: ActivityAttributes {
         var summary: String?
         var errorMessage: String?
         var startedAt: Date
+        /// M4：failed 态第二行的下一步提示；nil 时 widget 显示默认的「按操作按钮再试一次」。
+        /// 可选且有默认值：旧版本推送的 state 解码不受影响，现有的 memberwise init 调用也不用改。
+        var errorHint: String? = nil
     }
 
-    /// 会话 ID，与 Documents/sessions/<sessionID>.png、<sessionID>.m4a 对应。
+    /// 会话 ID，与 App Group 容器 sessions/<sessionID>.png、<sessionID>.m4a 对应。
     var sessionID: String
+}
+
+// MARK: - 深链（SPEC 第 6.10 节：点击灵动岛跳到 islandask://session/<sessionID>）
+
+nonisolated extension AskActivityAttributes {
+
+    static let urlScheme = "islandask"
+    static let sessionHost = "session"
+
+    static func sessionURL(sessionID: String) -> URL {
+        var components = URLComponents()
+        components.scheme = urlScheme
+        components.host = sessionHost
+        components.path = "/\(sessionID)"
+        return components.url ?? URL(string: "\(urlScheme)://\(sessionHost)")!
+    }
+
+    /// 解析 islandask://session/<uuid>；不是本 App 的会话链接时返回 nil。
+    static func sessionID(from url: URL) -> UUID? {
+        guard url.scheme?.lowercased() == urlScheme, url.host()?.lowercased() == sessionHost else { return nil }
+        return UUID(uuidString: url.lastPathComponent)
+    }
 }
