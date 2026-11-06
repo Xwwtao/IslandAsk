@@ -620,7 +620,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
             "messages": messages,
             // 与 SPEC 6.9 的偏差：快速档改为流式，summary 一完整就更新灵动岛（M4 耗时优化）。
             "stream": true,
-            // TODO: 核对官方文档：DeepSeek 流式时用 stream_options.include_usage 在最后一个 chunk 返回 usage，需真机确认。
+            // 流式时最后一个 chunk 返回 usage（已真机确认）。
             "stream_options": ["include_usage": true],
             "max_tokens": 2048,
             "thinking": ["type": "disabled"],
@@ -843,8 +843,8 @@ nonisolated struct ChatCompletionChunk: Decodable {
         }
     }
 
-    /// TODO: 核对官方文档：prompt_cache_hit_tokens、completion_tokens_details.reasoning_tokens 是 DeepSeek 文档里的字段，
-    /// 流式 usage chunk 是否都返回需真机确认；都是可选，缺了只是卡片不显示对应一列。
+    /// 流式最后一个 chunk 返回（stream_options.include_usage），缓存命中和思考 token 已真机确认会返回；
+    /// 字段仍保持可选，缺了只是卡片不显示对应一列。
     struct Usage: Decodable {
         struct CompletionDetails: Decodable {
             let reasoningTokens: Int?
