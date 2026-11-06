@@ -12,7 +12,9 @@
 - iOS 26+，Swift 6（严格并发检查），SwiftUI。
 - 只用系统框架，不引入任何第三方依赖。
 - 不修改 `IslandAsk.xcodeproj/project.pbxproj`、Info.plist、entitlements 文件。需要改工程配置时，停下来告诉我具体操作步骤，由我在 Xcode 里完成。
-- 不修改 `docs/SPEC.md`。发现规格与实际 API 冲突或不可行时，先停下来说明问题，不要自行换方案。
+- `docs/SPEC.md` 可以有限修改：
+  - 可以直接改：我明确要求的修改；按已实现的代码同步文件结构、字段名、接口签名、日志 category 等实现细节；更正错别字和与代码不一致的描述。改完在汇报里列出改了哪些章节。
+  - 不能自行改：产品方向、交互流程、里程碑范围、第 2 节的约束与决策。发现规格与实际 API 冲突或不可行时，先停下来说明问题，不要自行换方案，也不要先改 SPEC 再实现。
 - 只做我指定的里程碑，不实现范围以外的功能。
 
 ## 文件放置（与 SPEC 第 3 节不同时，以这里为准）
@@ -53,7 +55,7 @@ xcodebuild -project IslandAsk.xcodeproj -scheme IslandAsk \
 
 ## 日志
 
-- 统一使用 `os.Logger`，subsystem 取 `Bundle.main.bundleIdentifier`，category 按模块划分：`intent`、`coordinator`、`audio`、`transcription`、`llm`、`activity`。
+- 统一使用 `os.Logger`，subsystem 取 `Bundle.main.bundleIdentifier`，category 按模块划分：`intent`、`coordinator`、`audio`、`transcription`、`llm`、`activity`，M-C4 起加 `agent`。
 - 链路上每个关键动作的开始、成功、失败都要打日志，失败时带上错误信息，方便我在真机上排查。
 
 ## 工作方式
