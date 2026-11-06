@@ -111,7 +111,7 @@ private struct MarkdownBlocksView: View, Equatable {
                 currentLink = nil
                 currentText = ""
             }
-            guard let host = currentLink?.host(), !currentText.localizedCaseInsensitiveContains(host) else { return }
+            guard let host = currentLink?.host(), !LinkSafety.linkTextShowsHost(currentText, host: host) else { return }
             var label = AttributedString("（\(host)）")
             label.foregroundColor = Color.secondary
             result.append(label)
@@ -293,5 +293,24 @@ enum MarkdownBlock: Equatable {
             indent: indent,
             text: afterDigits.dropFirst(2).trimmingCharacters(in: .whitespaces)
         )
+    }
+}
+
+// MARK: - 链接安全
+
+nonisolated enum LinkSafety {
+
+    /// 链接文字本身就是这个域名（或以它为主机的网址）时才不标域名。不能用「文字包含域名」判断：
+    /// 文字 bank.com、真实地址 ank.com 也算包含，用户会被误导。
+    static func linkTextShowsHost(_ text: String, host: String) -> Bool {
+        func normalized(_ value: String) -> String {
+            let lowered = value.lowercased()
+            return lowered.hasPrefix("www.") ? String(lowered.dropFirst(4)) : lowered
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace) else { return false }
+        let textHost = URL(string: trimmed)?.host() ?? URL(string: "https://\(trimmed)")?.host()
+        guard let textHost else { return false }
+        return normalized(textHost) == normalized(host)
     }
 }

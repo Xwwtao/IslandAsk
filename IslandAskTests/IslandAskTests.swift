@@ -10,6 +10,25 @@ import Testing
 import os
 @testable import IslandAsk
 
+// MARK: - 链接安全
+
+struct LinkSafetyTests {
+
+    @Test func hidesLabelOnlyWhenTextIsTheSameHost() {
+        #expect(LinkSafety.linkTextShowsHost("bank.com", host: "bank.com"))
+        #expect(LinkSafety.linkTextShowsHost("https://www.bank.com/login", host: "bank.com"))
+        #expect(LinkSafety.linkTextShowsHost("BANK.COM", host: "bank.com"))
+    }
+
+    @Test func showsLabelForLookalikeOrDescriptiveText() {
+        // 文字包含真实域名的子串，但不是同一个域名。
+        #expect(!LinkSafety.linkTextShowsHost("bank.com", host: "ank.com"))
+        #expect(!LinkSafety.linkTextShowsHost("bank.com.evil.com", host: "bank.com"))
+        #expect(!LinkSafety.linkTextShowsHost("点这里登录 bank.com", host: "bank.com"))
+        #expect(!LinkSafety.linkTextShowsHost("官网", host: "bank.com"))
+    }
+}
+
 // MARK: - Markdown
 
 @MainActor
