@@ -28,6 +28,9 @@ final class StreamingReply {
     @ObservationIgnored let startedInstant = ContinuousClock.now
     @ObservationIgnored private(set) var firstReasoningAt: ContinuousClock.Instant?
     @ObservationIgnored private(set) var firstContentAt: ContinuousClock.Instant?
+    /// 流结束前收到的 token 用量和发请求用的模型（会话页 Token 卡片）。
+    @ObservationIgnored private(set) var usage: TokenUsage?
+    @ObservationIgnored var model: String?
 
     @ObservationIgnored private var pendingReasoning = ""
     @ObservationIgnored private var pendingContent = ""
@@ -45,6 +48,10 @@ final class StreamingReply {
         case .content(let text):
             if firstContentAt == nil { firstContentAt = .now }
             pendingContent += text
+        case .usage(let usage):
+            // 不进正文，也不需要刷新 UI。
+            self.usage = usage
+            return
         }
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in

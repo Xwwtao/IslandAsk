@@ -444,7 +444,7 @@ struct SettingsView: View {
                 diagnosticRow("App Group", ok: AppGroup.isContainerAvailable, okText: "已配置", badText: "未配置")
                 LabeledContent("识别语言", value: AppSettings.recognitionLanguage.displayName)
                 LabeledContent("模型", value: AppSettings.model)
-                Toggle("会话页显示耗时", isOn: $showsTiming)
+                Toggle("会话页显示耗时和 Token", isOn: $showsTiming)
                     .onChange(of: showsTiming) { _, value in AppSettings.showsTiming = value }
             }
             .font(.subheadline)

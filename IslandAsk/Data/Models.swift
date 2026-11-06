@@ -46,6 +46,8 @@ final class AskSession {
     var needsDeepAnswer: Bool?
     /// M4：各环节耗时（SessionTiming 的 JSON），会话页耗时卡片显示。旧会话为 nil。
     var timingData: Data?
+    /// 每次大模型调用的 token 用量（[TokenUsageRecord] 的 JSON），会话页 Token 卡片显示。旧会话为 nil。
+    var tokenUsageData: Data?
     /// App 内追问记录（不含首轮问题和回答，那两项在 transcript / answer 里）。
     @Relationship(deleteRule: .cascade, inverse: \ChatMessage.session)
     var messages: [ChatMessage] = []
@@ -91,6 +93,10 @@ final class AskSession {
 
     var timing: SessionTiming? {
         SessionTiming.decode(timingData)
+    }
+
+    var tokenUsages: [TokenUsageRecord] {
+        TokenUsageRecord.decodeList(tokenUsageData)
     }
 
     /// 发给大模型的上下文：首轮问题 + 首轮回答 + 已有追问（SPEC 6.12：追问沿用同一张截图和上下文）。

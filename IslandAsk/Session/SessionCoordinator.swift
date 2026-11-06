@@ -754,6 +754,7 @@ final class SessionCoordinator {
             timing.trimmedSilenceMs = trimmed.map { Int($0 * 1000) }
         }
         updateSession(sessionID, reason: "timing saved") { $0.timingData = timing.encoded() }
+        appendTokenUsage(sessionID: sessionID, kind: .quick, usage: answer?.usage, model: nil)
         logger.info("timing session=\(sessionID.uuidString, privacy: .public) \(timing.logLine, privacy: .public)")
         answeringSessionID = nil
         answerTask = nil

@@ -79,6 +79,8 @@ extension SessionCoordinator {
         }
         reply.flush()
         recordDeepTiming(sessionID: sessionID, reply: reply, succeeded: (try? result.get()) != nil)
+        // 失败时服务端若已返回 usage（例如被截断）也记下：这次调用照样计费。
+        appendTokenUsage(sessionID: sessionID, kind: .deep, usage: reply.usage, model: reply.model)
         switch result {
         case .success:
             updateSession(sessionID, reason: "deep answer finished") { session in
@@ -160,6 +162,7 @@ extension SessionCoordinator {
         do {
             try await work.value
             reply.flush()
+            appendTokenUsage(sessionID: sessionID, kind: .followUp, usage: reply.usage, model: reply.model)
             session.messages.append(
                 ChatMessage(
                     role: .assistant,
@@ -175,6 +178,7 @@ extension SessionCoordinator {
             logger.error(
                 "follow-up failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
+            appendTokenUsage(sessionID: sessionID, kind: .followUp, usage: reply.usage, model: reply.model)
             AppDatabase.context.delete(userMessage)
             AppDatabase.save(reason: "follow-up rollback session=\(sessionID.uuidString)")
             throw SessionCoordinatorError.followUpFailed(Self.deepFailureMessage(for: error))
@@ -192,6 +196,7 @@ extension SessionCoordinator {
     ) async throws {
         let imageJPEG = await uploadJPEGIfPossible(url: screenshotURL, sessionID: sessionID)
         let provider = try OpenAICompatibleProvider.fromSettings()
+        reply.model = provider.model
         let stream = provider.streamDeepAnswer(
             imageJPEG: imageJPEG,
             screenText: screenText,
@@ -263,6 +268,7 @@ extension SessionCoordinator {
             session.needsDeepAnswer = answer.needsDeep ?? true
             session.statusValue = .answered
             AppDatabase.save(reason: "retry answered session=\(sessionID.uuidString)")
+            appendTokenUsage(sessionID: sessionID, kind: .retry, usage: answer.usage, model: provider.model)
             logger.info("retry succeeded session=\(sessionID.uuidString, privacy: .public)")
         } catch {
             session.markFailed(.answerFailure(for: error))
@@ -271,6 +277,21 @@ extension SessionCoordinator {
                 "retry failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
         }
+    }
+
+    /// 追加一条 token 用量记录（会话页 Token 卡片）。没拿到 usage 时只记日志。
+    func appendTokenUsage(sessionID: UUID, kind: TokenUsageRecord.Kind, usage: TokenUsage?, model: String?) {
+        guard let usage else {
+            logger.notice(
+                "token usage missing session=\(sessionID.uuidString, privacy: .public) kind=\(kind.rawValue, privacy: .public)"
+            )
+            return
+        }
+        let record = TokenUsageRecord(kind: kind, usage: usage, model: model ?? AppSettings.model, createdAt: .now)
+        updateSession(sessionID, reason: "token usage saved") { session in
+            session.tokenUsageData = TokenUsageRecord.encodeList(session.tokenUsages + [record])
+        }
+        logger.info("token usage session=\(sessionID.uuidString, privacy: .public) \(record.logLine, privacy: .public)")
     }
 
     /// App 内请求（深度回答、追问、重问）用的 OCR 文字：已有就复用；没有（旧会话 / 当时没识别完）就现在识别并写库。

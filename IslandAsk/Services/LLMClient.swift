@@ -30,6 +30,8 @@ nonisolated struct LLMAnswer: Codable, Sendable {
     /// 不在 CodingKeys 里、不参与 JSON 解析：ask 成功后填入最后一次请求的网络耗时和请求次数（含重试）。
     var network: NetworkTiming? = nil
     var attempts: Int? = nil
+    /// 同上，不参与 JSON 解析：流式最后一个 chunk 里的 token 用量（会话页 Token 卡片）。
+    var usage: TokenUsage? = nil
 
     enum CodingKeys: String, CodingKey {
         case summary
@@ -53,6 +55,8 @@ nonisolated struct LLMTurn: Sendable {
 nonisolated enum LLMStreamEvent: Sendable {
     case reasoning(String)
     case content(String)
+    /// 流结束前的 token 用量（请求带 stream_options.include_usage 时才有）。
+    case usage(TokenUsage)
 }
 
 nonisolated protocol LLMProvider: Sendable {
@@ -342,6 +346,13 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
                     logger.error("stream chunk decode failed chars=\(payload.count, privacy: .public) head=\(String(payload.prefix(200)), privacy: .private)")
                     continue
                 }
+                if let usage = chunk.usage {
+                    let tokenUsage = usage.tokenUsage
+                    logger.info(
+                        "stream usage promptTokens=\(tokenUsage.promptTokens ?? -1, privacy: .public) completionTokens=\(tokenUsage.completionTokens ?? -1, privacy: .public) reasoningTokens=\(tokenUsage.reasoningTokens ?? -1, privacy: .public) cacheHitTokens=\(tokenUsage.cacheHitTokens ?? -1, privacy: .public)"
+                    )
+                    continuation.yield(.usage(tokenUsage))
+                }
                 guard let choice = chunk.choices.first else { continue }
                 if let reasoning = choice.delta.reasoningContent, !reasoning.isEmpty {
                     if reasoningChars == 0 {
@@ -525,7 +536,9 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
             throw LLMError.emptyContent
         }
         do {
-            return try Self.parseAnswer(content, logger: logger)
+            var answer = try Self.parseAnswer(content, logger: logger)
+            answer.usage = usage?.tokenUsage
+            return answer
         } catch {
             // 回答可能复述屏幕内容，头尾片段标 private（Xcode 连机调试时仍可见），长度公开。
             logger.error(
@@ -637,6 +650,8 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
             "model": model,
             "messages": messages,
             "stream": true,
+            // 最后一个 chunk 带 usage，会话页 Token 卡片用（与快速档同一参数）。
+            "stream_options": ["include_usage": true],
             "thinking": ["type": "enabled"],
             "reasoning_effort": "high",
         ]
@@ -807,7 +822,8 @@ nonisolated final class TransactionMetricsLogger: NSObject, URLSessionTaskDelega
 // MARK: - 响应结构（只解需要的字段）
 
 /// 流式响应的一个 chunk（只解需要的字段）。
-nonisolated private struct ChatCompletionChunk: Decodable {
+/// 不标 private：单元测试直接解码 usage chunk。
+nonisolated struct ChatCompletionChunk: Decodable {
     struct Choice: Decodable {
         struct Delta: Decodable {
             let content: String?
@@ -827,13 +843,36 @@ nonisolated private struct ChatCompletionChunk: Decodable {
         }
     }
 
+    /// TODO: 核对官方文档：prompt_cache_hit_tokens、completion_tokens_details.reasoning_tokens 是 DeepSeek 文档里的字段，
+    /// 流式 usage chunk 是否都返回需真机确认；都是可选，缺了只是卡片不显示对应一列。
     struct Usage: Decodable {
+        struct CompletionDetails: Decodable {
+            let reasoningTokens: Int?
+
+            enum CodingKeys: String, CodingKey {
+                case reasoningTokens = "reasoning_tokens"
+            }
+        }
+
         let promptTokens: Int?
         let completionTokens: Int?
+        let promptCacheHitTokens: Int?
+        let completionTokensDetails: CompletionDetails?
 
         enum CodingKeys: String, CodingKey {
             case promptTokens = "prompt_tokens"
             case completionTokens = "completion_tokens"
+            case promptCacheHitTokens = "prompt_cache_hit_tokens"
+            case completionTokensDetails = "completion_tokens_details"
+        }
+
+        var tokenUsage: TokenUsage {
+            TokenUsage(
+                promptTokens: promptTokens,
+                completionTokens: completionTokens,
+                reasoningTokens: completionTokensDetails?.reasoningTokens,
+                cacheHitTokens: promptCacheHitTokens
+            )
         }
     }
 

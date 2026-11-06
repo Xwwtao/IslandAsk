@@ -308,9 +308,13 @@ nonisolated enum LinkSafety {
             return lowered.hasPrefix("www.") ? String(lowered.dropFirst(4)) : lowered
         }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace) else { return false }
-        let textHost = URL(string: trimmed)?.host() ?? URL(string: "https://\(trimmed)")?.host()
-        guard let textHost else { return false }
+        // 「bank.com@evil.com」按 URL 解析主机是 evil.com，但人读起来是 bank.com：带 @ 的一律标域名。
+        guard !trimmed.isEmpty, !trimmed.contains(where: \.isWhitespace), !trimmed.contains("@") else { return false }
+        let hasScheme = trimmed.range(of: "^[A-Za-z][A-Za-z0-9+.-]*://", options: .regularExpression) != nil
+        guard let parsed = URLComponents(string: hasScheme ? trimmed : "https://\(trimmed)"),
+              let scheme = parsed.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              parsed.user == nil, parsed.password == nil,
+              let textHost = parsed.host, !textHost.isEmpty else { return false }
         return normalized(textHost) == normalized(host)
     }
 }

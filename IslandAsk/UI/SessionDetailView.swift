@@ -105,6 +105,12 @@ struct SessionDetailView: View {
                     if AppSettings.showsTiming, let timing = session.timing {
                         TimingCard(timing: timing)
                     }
+                    if AppSettings.showsTiming, !session.tokenUsages.isEmpty {
+                        TokenUsageCard(
+                            records: session.tokenUsages,
+                            cancelledSpeculativeRequests: session.timing?.cancelledSpeculativeRequests ?? 0
+                        )
+                    }
                     followUpSection(session)
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }

@@ -416,7 +416,7 @@ card.translation：截图主要内容不是中文时，给出中文翻译，最�
 
 **深度档**
 
-- `stream: true`（SSE），`thinking: enabled`，`reasoning_effort: high`，不用 JSON 模式，不设 `max_tokens`。
+- `stream: true`（SSE），`stream_options: {include_usage: true}`（最后一个 chunk 带 token 用量），`thinking: enabled`，`reasoning_effort: high`，不用 JSON 模式，不设 `max_tokens`。
 - 思考片段在 `delta.reasoning_content`，正文片段在 `delta.content`。不带 tools 时 API 会忽略历史里的 reasoning_content，所以不回传。
 - 超时：数据包之间最多 60 秒，整次请求最多 300 秒。不自动重试，失败后在会话页手动重新生成。
 - 系统提示词：
@@ -488,6 +488,8 @@ listening 布局按 M1 真机反馈调整，原因：
     var errorMessage: String?     // failed 的原因
     var needsDeepAnswer: Bool?    // 快速档判断；nil 按 true 处理
     var deepAnswer: String?; var deepReasoning: String?; var deepError: String?   // 深度档
+    var timingData: Data?         // 各环节耗时（SessionTiming 的 JSON）
+    var tokenUsageData: Data?     // 每次大模型调用的 token 用量（[TokenUsageRecord] 的 JSON）
     @Relationship(deleteRule: .cascade, inverse: \ChatMessage.session)
     var messages: [ChatMessage]   // App 内追问记录（不含首轮），显示时按 createdAt 排序
 }

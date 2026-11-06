@@ -10,6 +10,50 @@ import Testing
 import os
 @testable import IslandAsk
 
+// MARK: - Token 用量
+
+struct TokenUsageTests {
+
+    @Test func decodesUsageChunkWithDetails() throws {
+        let json = #"{"choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":300,"prompt_cache_hit_tokens":800,"completion_tokens_details":{"reasoning_tokens":250}}}"#
+        let chunk = try JSONDecoder().decode(ChatCompletionChunk.self, from: Data(json.utf8))
+        let usage = try #require(chunk.usage).tokenUsage
+        #expect(usage == TokenUsage(promptTokens: 1200, completionTokens: 300, reasoningTokens: 250, cacheHitTokens: 800))
+        #expect(usage.totalTokens == 1500)
+    }
+
+    @Test func decodesUsageChunkWithoutOptionalFields() throws {
+        let json = #"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}"#
+        let chunk = try JSONDecoder().decode(ChatCompletionChunk.self, from: Data(json.utf8))
+        let usage = try #require(chunk.usage).tokenUsage
+        #expect(usage.reasoningTokens == nil)
+        #expect(usage.cacheHitTokens == nil)
+        #expect(usage.totalTokens == 15)
+    }
+
+    @Test func recordsRoundTripAndTotal() {
+        let records = [
+            TokenUsageRecord(kind: .quick, usage: TokenUsage(promptTokens: 100, completionTokens: 20), model: "m", createdAt: Date(timeIntervalSince1970: 0)),
+            TokenUsageRecord(kind: .deep, usage: TokenUsage(promptTokens: 110, completionTokens: 500, reasoningTokens: 400), model: "m", createdAt: Date(timeIntervalSince1970: 1)),
+        ]
+        let decoded = TokenUsageRecord.decodeList(TokenUsageRecord.encodeList(records))
+        #expect(decoded == records)
+        #expect(decoded.totalTokens == 730)
+        #expect(TokenUsageRecord.decodeList(nil).isEmpty)
+    }
+
+    @MainActor
+    @Test func cancelledSpeculativeCountExcludesHit() {
+        var timing = SessionTiming()
+        timing.speculativeRequests = 3
+        timing.speculation = .hit
+        #expect(timing.cancelledSpeculativeRequests == 2)
+        timing.speculation = .miss
+        #expect(timing.cancelledSpeculativeRequests == 3)
+        #expect(SessionTiming().cancelledSpeculativeRequests == 0)
+    }
+}
+
 // MARK: - 链接安全
 
 struct LinkSafetyTests {
@@ -26,6 +70,10 @@ struct LinkSafetyTests {
         #expect(!LinkSafety.linkTextShowsHost("bank.com.evil.com", host: "bank.com"))
         #expect(!LinkSafety.linkTextShowsHost("点这里登录 bank.com", host: "bank.com"))
         #expect(!LinkSafety.linkTextShowsHost("官网", host: "bank.com"))
+        // 用户信息骗局：人读是 bank.com，实际主机是 evil.com。
+        #expect(!LinkSafety.linkTextShowsHost("bank.com@evil.com", host: "evil.com"))
+        #expect(!LinkSafety.linkTextShowsHost("https://bank.com@evil.com/login", host: "evil.com"))
+        #expect(!LinkSafety.linkTextShowsHost("ftp://bank.com", host: "bank.com"))
     }
 }
 
