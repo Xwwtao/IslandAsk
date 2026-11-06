@@ -47,17 +47,31 @@ nonisolated struct SilenceDetectionConfiguration: Sendable {
 
     /// 固定用 SPEC 第 6.7 节的默认值：UI 优化时去掉了设置页里的阈值调节（看起来太复杂）。
     static var current: SilenceDetectionConfiguration {
+        current(hasScreenshot: false)
+    }
+
+    /// M-C1：有截图且开启「不说话就收藏」时，不开口的判定时间用设置页的值（默认 3 秒），超时后收藏；
+    /// 否则仍是 6 秒，超时后取消。
+    static func current(hasScreenshot: Bool) -> SilenceDetectionConfiguration {
         typealias Defaults = AppSettings.SilenceDefaults
+        let noSpeechSeconds = collectsOnNoSpeech(hasScreenshot: hasScreenshot)
+            ? AppSettings.collectNoSpeechSeconds
+            : Defaults.noSpeechTimeoutSeconds
         return SilenceDetectionConfiguration(
             speechEndRMSDB: Float(Defaults.speechEndRMSDB),
             endSilenceDuration: .milliseconds(Int(Defaults.endSilenceSeconds * 1000)),
             transcriptStableDuration: .milliseconds(Int(Defaults.transcriptStableSeconds * 1000)),
-            noSpeechTimeout: .milliseconds(Int(Defaults.noSpeechTimeoutSeconds * 1000)),
+            noSpeechTimeout: .milliseconds(Int(noSpeechSeconds * 1000)),
             maxRecordingDuration: .milliseconds(Int(Defaults.maxRecordingSeconds * 1000)),
             settledDuration: .milliseconds(Int(Defaults.speculativeStableSeconds * 1000)),
             settledQuietDuration: .milliseconds(Int(Defaults.speculativeQuietSeconds * 1000)),
             settledRelativeDropDB: Float(Defaults.speculativeRelativeDropDB)
         )
+    }
+
+    /// 不开口超时后是收藏还是取消：需要有截图，且设置里没关。
+    static func collectsOnNoSpeech(hasScreenshot: Bool) -> Bool {
+        hasScreenshot && AppSettings.noSpeechCollects
     }
 }
 

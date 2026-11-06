@@ -168,6 +168,88 @@ struct LLMAnswerParsingTests {
         }
     }
 
+    // MARK: M-C1 意图与卡片字段
+
+    @Test func parsesIntentAndCardFields() throws {
+        let content = #"""
+        {"intent": "both", "summary": "一家咖啡店", "answer": "详细", "needs_deep": false,
+         "card": {"title": "街角咖啡", "type": "place", "tags": ["咖啡", "探店"],
+                  "key_info": [{"label": "地址", "value": "中山路 1 号"}],
+                  "note": "周末去", "source_platform": "小红书", "source_title": null, "translation": null}}
+        """#
+        let answer = try OpenAICompatibleProvider.parseAnswer(content, logger: logger)
+        #expect(answer.intent == .both)
+        let card = try #require(answer.card)
+        #expect(card.title == "街角咖啡")
+        #expect(card.type == "place")
+        #expect(card.tags == ["咖啡", "探店"])
+        #expect(card.keyInfo == [KeyInfo(label: "地址", value: "中山路 1 号")])
+        #expect(card.note == "周末去")
+        #expect(card.sourcePlatform == "小红书")
+        #expect(card.sourceTitle == nil)
+        #expect(card.translation == nil)
+    }
+
+    @Test func parsesWithoutCardOrIntent() throws {
+        let answer = try OpenAICompatibleProvider.parseAnswer(#"{"summary": "结论", "answer": "回答"}"#, logger: logger)
+        #expect(answer.intent == nil)
+        #expect(answer.card == nil)
+    }
+
+    @Test func unknownIntentAndMalformedCardBecomeNil() throws {
+        let answer = try OpenAICompatibleProvider.parseAnswer(
+            #"{"intent": "save", "summary": "结论", "answer": "回答", "card": "oops"}"#,
+            logger: logger
+        )
+        #expect(answer.intent == nil)
+        #expect(answer.card == nil)
+    }
+
+    @Test func intentIsCaseInsensitive() throws {
+        let answer = try OpenAICompatibleProvider.parseAnswer(#"{"intent": " Collect ", "summary": "s", "answer": "a"}"#, logger: logger)
+        #expect(answer.intent == .collect)
+    }
+
+    @Test func normalizesCardFields() throws {
+        let longTitle = String(repeating: "题", count: 30)
+        let content = #"""
+        {"summary": "s", "answer": "a", "card": {"title": "\#(longTitle)", "type": "Recipe2",
+         "tags": ["a", " ", "b", "a", "c", "d", "e"],
+         "key_info": [{"label": "1", "value": "x"}, {"label": "", "value": "y"}, {"value": "no label"},
+                      {"label": "2", "value": "x"}, {"label": "3", "value": "x"}, {"label": "4", "value": "x"},
+                      {"label": "5", "value": "x"}, {"label": "6", "value": "x"}, {"label": "7", "value": "x"}],
+         "note": "  ", "tags_extra": 1, "translation": 42}}
+        """#
+        let answer = try OpenAICompatibleProvider.parseAnswer(content, logger: logger)
+        let card = try #require(answer.card)
+        #expect(card.title?.count == CardFields.maxTitleLength)
+        #expect(card.type == CardType.other.rawValue)
+        #expect(card.tags == ["a", "b", "c", "d"])
+        #expect(card.keyInfo?.count == CardFields.maxKeyInfo)
+        #expect(card.keyInfo?.first == KeyInfo(label: "1", value: "x"))
+        #expect(card.note == nil)
+        #expect(card.translation == nil)
+    }
+
+    @Test func truncatesLongTranslation() {
+        let fields = CardFields(translation: String(repeating: "译", count: 700)).normalized()
+        #expect(fields.translation?.count == CardFields.maxTranslationLength)
+        #expect(fields.translation?.hasSuffix("…") == true)
+    }
+
+    @Test func quickQuestionTextCarriesIntentHint() {
+        #expect(OpenAICompatibleProvider.quickQuestionText("  ", intentHint: .collect).contains("collect"))
+        #expect(OpenAICompatibleProvider.quickQuestionText("", intentHint: .ask).hasPrefix(OpenAICompatibleProvider.implicitQuestion))
+        #expect(OpenAICompatibleProvider.quickQuestionText("这是什么", intentHint: .ask).hasPrefix("这是什么"))
+        #expect(OpenAICompatibleProvider.quickQuestionText(" 这是什么 ", intentHint: nil) == "这是什么")
+    }
+
+    @Test func intentFieldIsReadBeforeSummaryCompletes() {
+        let partial = #"{"intent": "collect", "summary": "收藏了一篇"#
+        #expect(OpenAICompatibleProvider.completedStringField("intent", in: partial) == "collect")
+        #expect(OpenAICompatibleProvider.completedStringField("summary", in: partial) == nil)
+    }
+
     @Test func classifiesRetryableErrors() {
         #expect(LLMError.http(status: 429).isRetryable)
         #expect(LLMError.http(status: 503).isRetryable)

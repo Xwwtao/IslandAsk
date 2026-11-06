@@ -89,7 +89,7 @@ IslandAsk/                           // 主 App target
 │   └── SaveLinkIntent.swift         // （M-C2）快捷指令共享表单收藏链接
 ├── Session/
 │   ├── SessionCoordinator.swift
-│   ├── SessionCoordinator+Cards.swift  // （M-C1）建卡、整理、收藏切换、旧会话补建卡片、导入 inbox
+│   ├── SessionCoordinator+Cards.swift  // （M-C1）写卡片、灵动岛收藏 / 改为提问、批量操作、重新整理、旧会话补建卡片；（M-C2）导入 inbox
 │   └── StreamingReply.swift         // 深度回答流式状态、后台任务封装
 ├── Agent/                           // （M-C4）
 │   ├── AgentTool.swift              // 工具协议与注册表
@@ -119,8 +119,8 @@ IslandAsk/                           // 主 App target
 │   └── AppDatabase.swift            // 共享 ModelContainer（App Group）
 └── UI/
     ├── OnboardingView.swift
-    ├── HistoryView.swift            // （M-C1）改为 LibraryView.swift：收藏库
-    ├── CardDetailView.swift         // （M-C1）卡片详情，问答部分复用会话页
+    ├── LibraryView.swift            // （M-C1）收藏库，替换原 HistoryView.swift（含 ScreenshotThumbnail）
+    ├── CardDetailView.swift         // （M-C1）卡片信息、编辑标题和标签、批量加标签；详情页本身复用会话页
     ├── SessionDetailView.swift
     ├── SettingsView.swift
     ├── MarkdownText.swift           // 轻量 Markdown 块级渲染
@@ -354,7 +354,7 @@ struct StopAskIntent: LiveActivityIntent {
 struct LLMTurn: Sendable { enum Role { case user, assistant }; let role: Role; let content: String }
 struct LLMAnswer: Codable {
     let summary: String; let answer: String; var needsDeep: Bool?
-    var intent: Intent?          // M-C1：ask / collect / both；nil 按 ask
+    var intent: LLMIntent?       // M-C1：ask / collect / both；无法识别时为 nil，按 ask
     var card: CardFields?        // M-C1：卡片字段；nil 时卡片只用 summary / answer
 }
 struct CardFields: Codable {     // 全部可选，模型漏字段时不报格式错误
@@ -367,10 +367,12 @@ struct CardFields: Codable {     // 全部可选，模型漏字段时不报格�
 enum LLMStreamEvent: Sendable { case reasoning(String), content(String) }
 
 protocol LLMProvider: Sendable {
-    // 快速档：灵动岛用
-    func ask(imageJPEG: Data?, question: String, history: [LLMTurn]) async throws -> LLMAnswer
+    // 快速档：灵动岛用。screenText 是截图 OCR 文字（M4）；intentHint 是本地已确定的意图（M-C1：没说话 = collect，
+    // 「改为提问」= ask）；onSummary 在流式 summary 一完整时回调，同时带上已到达的 intent
+    func ask(imageJPEG: Data?, screenText: String?, question: String, history: [LLMTurn],
+             intentHint: LLMIntent?, onSummary: ((String, LLMIntent?) async -> Void)?) async throws -> LLMAnswer
     // 深度档：会话页和追问用
-    func streamDeepAnswer(imageJPEG: Data?, question: String, history: [LLMTurn]) -> AsyncThrowingStream<LLMStreamEvent, Error>
+    func streamDeepAnswer(imageJPEG: Data?, screenText: String?, question: String, history: [LLMTurn]) -> AsyncThrowingStream<LLMStreamEvent, Error>
 }
 ```
 
@@ -381,7 +383,7 @@ protocol LLMProvider: Sendable {
 
 **快速档**
 
-- `stream: false`，`thinking: disabled`，`response_format: json_object`，`max_tokens: 3072`（M-C1 起从 2048 上调：输出多了卡片字段和翻译）。
+- `stream: true`（M4 起，summary 一完整就更新灵动岛），`thinking: disabled`，`response_format: json_object`，`max_tokens: 3072`（M-C1 起从 2048 上调：输出多了卡片字段和翻译）。
 - 超时 30 秒，可重试的错误（超时、断网、5xx、429、空内容、格式错误）重试 1 次。
 - `finish_reason = length`：报「回答太长被截断」，不重试。
 - 系统提示词（M-C1 起使用，同时完成意图判断、回答和卡片整理）：
@@ -396,7 +398,7 @@ protocol LLMProvider: Sendable {
 {"intent": "ask", "summary": "...", "answer": "...", "needs_deep": false,
  "card": {"title": "...", "type": "article", "tags": ["..."], "key_info": [{"label": "...", "value": "..."}],
           "note": null, "source_platform": null, "source_title": null, "translation": null}}
-summary：不超过 40 个汉字，显示在灵动岛。ask / both 时直接给结论，不寒暄；collect 时概括收藏了什么。
+summary：不超过 80 个汉字，显示在灵动岛。ask / both 时直接给结论，不寒暄；collect 时概括收藏了什么。
 answer：ask / both 时是完整回答，可使用 Markdown；collect 时是 2–4 句的内容摘要。
 needs_deep：true 或 false，只在 ask / both 时有意义，collect 时为 false。answer 已经完整准确回答了问题时为 false；需要逐项识别图中多个细节、多步推理、你没有把握，或 answer 只是概要时为 true。
 card.title：不超过 20 个汉字，概括截图内容本身（不是概括问题）。
@@ -409,8 +411,10 @@ card.translation：截图主要内容不是中文时，给出中文翻译，最�
 如果截图与问题无关或看不清，在 summary 中直接说明。
 ```
 
-- summary 超过 40 字时截断加「…」；没有返回 needs_deep 时按 true 处理（collect 除外）。
-- card.title 超过 20 字时截断；card.type 不在列表里时按 other；tags 超过 4 个时只取前 4 个。
+- summary 超过 80 字时截断加「…」（M4 灵动岛 UI 优化后展开态能放 5 行）；没有返回 needs_deep 时按 true 处理（collect 除外）。
+- card.title 超过 20 字时截断；card.type 不在列表里时按 other；tags 去空、去重后最多取 4 个；key_info 丢掉缺 label 或 value 的条目，最多 6 条；translation 超过 600 字截断加「…」。
+- intent 无法识别、card 不是对象时按缺失处理，不算格式错误；card 里单个字段类型不对只丢这个字段。
+- 用户没说话时 user 文字写「用户没有说话，请按 intent = collect 整理」；「改为提问」时写明 intent 必须为 ask（转录为空时用默认问法「请解释这张截图的主要内容。」）。
 - 截图主要是外文长文时，输出最长，最容易触发 `finish_reason = length` 或超时。日志里要记录 completion_tokens，M-C1 真机测试时重点观察。
 - 用户话为空（本地已定为 collect）时，question 传空字符串，提示词按 collect 处理。
 
@@ -435,7 +439,7 @@ struct AskActivityAttributes: ActivityAttributes {
         enum Phase: String, Codable { case listening, thinking, answered, failed }
         var phase: Phase
         var transcriptTail: String   // 最多 60 字，只取末尾
-        var summary: String?         // 最多 40 字
+        var summary: String?         // 最多 80 字
         var errorMessage: String?
         var startedAt: Date
         // M-C1 新增，全部可选，兼容旧的 Activity
@@ -515,6 +519,7 @@ listening 布局按 M1 真机反馈调整，原因：
     var origin: String                 // press（按键）/ share（分享，M-C2）
     var isSaved: Bool?                 // nil 按 false：提问产生的卡片默认不进收藏
     var organizeStatus: String?        // pending / done / failed
+    var intent: String?                // ask / collect / both；nil 按 ask。详情页据此显示问答或内容摘要
     var title: String?; var summary: String?
     var cardType: String?              // 与 CardFields.type 相同的取值
     var tags: [String]?
@@ -533,6 +538,8 @@ listening 布局按 M1 真机反馈调整，原因：
 
 - App 启动时，为没有卡片的旧会话补建卡片：origin = press，isSaved = nil，organizeStatus = done，title 取 summary（为空时取转录文字前 20 字）。不为旧会话调大模型。
 - 删除卡片时级联删除会话、截图和录音。
+- 设置里的保留天数只清理未收藏的卡片（连同会话、截图、录音），收藏的卡片永不过期。
+- 会话转为 failed 时，卡片 organizeStatus 同时记为 failed。
 - 卡片的创建、整理、编辑、删除同样只经 `SessionCoordinator`。
 
 ### 6.12 App 界面
@@ -569,13 +576,13 @@ listening 布局按 M1 真机反馈调整，原因：
 | --- | --- |
 | 收藏库（替换历史列表，作为首页） | 顶部分段「全部 / 收藏」，默认「全部」，记住上次的选择；下面一行类型筛选。每条显示截图缩略图、标题、类型和标签、时间、收藏标记；待整理或整理失败的显示状态。左滑删除。右上角「选择」进入多选模式（见下） |
 | 卡片详情 | 截图（可放大）、标题、类型、标签、关键信息、附注、翻译（可折叠）、来源（链接；推测的链接显示「推测来源，待确认」）。有问答的卡片在下方显示原会话页的内容（回答、深度回答、追问）。操作：收藏 / 取消收藏、复制、重新整理（整理失败时）、删除；标题和标签可以手动编辑 |
-| 设置 | 新增：不说话时的行为（收藏 / 取消，默认收藏）、不说话判定时间（默认 3 秒） |
+| 设置 | 新增：不说话时的行为（收藏 / 取消，默认收藏）、不说话判定时间（2 / 3 / 5 秒，默认 3 秒）；保留天数改名为「未收藏的问答保留」 |
 
 - 灵动岛深链和收藏库都进入卡片详情；原会话页作为卡片详情的问答部分复用，不另开页面。
 
 收藏库多选模式：
 
-- 进入：点右上角「选择」，或长按某张卡片（长按的卡片直接选中）。进入后每条前面显示勾选圈，点卡片切换选中，不再进入详情。
+- 进入：点右上角「选择」，或长按某张卡片、在弹出的菜单里点「选择」（这张卡片直接选中）。长按菜单另有收藏 / 取消收藏、复制、分享、删除。进入后每条前面显示勾选圈，点卡片切换选中，不再进入详情。
 - 顶部：显示「已选 N 项」，以及「全选 / 取消全选」（只作用于当前分段和筛选下可见的卡片）、「完成」退出。
 - 底部工具栏，未选中时置灰：
   - 收藏 / 取消收藏：选中的卡片全部已收藏时显示「取消收藏」，否则显示「收藏」。

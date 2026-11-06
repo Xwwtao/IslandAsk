@@ -9,6 +9,8 @@
 //      · thinking：问题原文 2 行。
 //      · answered：摘要最多 5 行（summary 上限 80 字）。
 //      · failed：错误说明 + 下一步提示（errorHint，默认「再试一次」）。
+//      · M-C1 收藏（kind = collect）：thinking 显示「整理中」；answered 显示「已收藏」+ 卡片标题一行 + 摘要最多 2 行，
+//        按钮为「改为提问」（canSwitchToAsk 时）+ 关闭。提问的 answered 按钮为复制 + 收藏 + 关闭，合计不超过 3 个。
 //    - 紧凑态右侧直接显示最近几个字，不展开也能看到进度。
 //    - 配色统一：红 = 录音，青 = 思考，绿 = 完成，橙 = 失败；keylineTint 跟随阶段。
 //
@@ -40,7 +42,7 @@ struct AskLiveActivity: Widget {
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    phaseIcon(context.state.phase)
+                    stateIcon(context.state)
                         .font(.title3)
                         .padding(.leading, 8)
                 }
@@ -57,7 +59,7 @@ struct AskLiveActivity: Widget {
                         .padding(.top, 2)
                 }
             } compactLeading: {
-                phaseIcon(context.state.phase)
+                stateIcon(context.state)
             } compactTrailing: {
                 compactTrailing(context: context)
             } minimal: {
@@ -74,7 +76,7 @@ struct AskLiveActivity: Widget {
     /// 顶部一行的标题；录音时附带计时（leading 太窄放不下计时，所以放在 center）。
     private func phaseTitle(context: ActivityViewContext<AskActivityAttributes>) -> some View {
         HStack(spacing: 6) {
-            Text(title(for: context.state.phase))
+            Text(title(for: context.state))
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(phaseColor(context.state.phase))
             if context.state.phase == .listening {
@@ -97,6 +99,17 @@ struct AskLiveActivity: Widget {
             .accessibilityLabel("停止")
         case .thinking:
             loadingIndicator
+        case .answered where context.state.isCollect:
+            HStack(spacing: 8) {
+                if context.state.canSwitchToAsk == true {
+                    Button(intent: SwitchToAskIntent(sessionID: context.attributes.sessionID)) {
+                        circleButtonLabel(systemName: "questionmark.bubble", tint: Color.white.opacity(0.25))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("改为提问")
+                }
+                dismissButton(context: context)
+            }
         case .answered:
             HStack(spacing: 8) {
                 let copied = context.state.answerCopied == true
@@ -108,10 +121,26 @@ struct AskLiveActivity: Widget {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(copied ? "已复制" : "复制回答")
+                saveButton(context: context)
                 dismissButton(context: context)
             }
         case .failed:
             dismissButton(context: context)
+        }
+    }
+
+    /// 提问回答后的「收藏」（SaveCardIntent）；已收藏后换成不可点的实心书签。
+    @ViewBuilder
+    private func saveButton(context: ActivityViewContext<AskActivityAttributes>) -> some View {
+        if context.state.isSaved == true {
+            circleButtonLabel(systemName: "bookmark.fill", tint: .green)
+                .accessibilityLabel("已收藏")
+        } else {
+            Button(intent: SaveCardIntent(sessionID: context.attributes.sessionID)) {
+                circleButtonLabel(systemName: "bookmark", tint: Color.white.opacity(0.25))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("收藏")
         }
     }
 
@@ -133,6 +162,12 @@ struct AskLiveActivity: Widget {
                 .lineLimit(4)
                 .minimumScaleFactor(0.85)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        case .thinking where context.state.isCollect:
+            Text("正在整理这张截图…")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
         case .thinking:
             Text(questionLine(context))
                 .font(.callout)
@@ -140,6 +175,20 @@ struct AskLiveActivity: Widget {
                 .lineLimit(2)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        case .answered where context.state.isCollect:
+            VStack(alignment: .leading, spacing: 3) {
+                if let cardTitle = context.state.cardTitle, !cardTitle.isEmpty {
+                    Text(cardTitle)
+                        .font(.callout.weight(.semibold))
+                        .lineLimit(1)
+                }
+                Text(context.state.summary ?? "")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         case .answered:
             Text(context.state.summary ?? "")
                 .font(.callout)
@@ -196,6 +245,9 @@ struct AskLiveActivity: Widget {
             phaseIcon(.listening)
         case .thinking:
             loadingIndicator
+        case .answered where context.state.isCollect:
+            Image(systemName: "bookmark.fill")
+                .foregroundStyle(.green)
         case .answered:
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
@@ -210,7 +262,7 @@ struct AskLiveActivity: Widget {
     private func lockScreenView(context: ActivityViewContext<AskActivityAttributes>) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                phaseIcon(context.state.phase)
+                stateIcon(context.state)
                     .font(.headline)
                 phaseTitle(context: context)
                 Spacer()
@@ -223,12 +275,23 @@ struct AskLiveActivity: Widget {
 
     // MARK: - 组件
 
-    private func title(for phase: AskActivityAttributes.ContentState.Phase) -> String {
-        switch phase {
+    private func title(for state: AskActivityAttributes.ContentState) -> String {
+        switch state.phase {
         case .listening: return "正在听"
-        case .thinking: return "思考中"
-        case .answered: return "回答"
-        case .failed: return "提问未完成"
+        case .thinking: return state.isCollect ? "整理中" : "思考中"
+        case .answered: return state.isCollect ? "已收藏" : "回答"
+        case .failed: return state.isCollect ? "收藏未完成" : "提问未完成"
+        }
+    }
+
+    /// 阶段图标；收藏完成时换成书签（M-C1）。
+    @ViewBuilder
+    private func stateIcon(_ state: AskActivityAttributes.ContentState) -> some View {
+        if state.phase == .answered, state.isCollect {
+            Image(systemName: "bookmark.fill")
+                .foregroundStyle(.green)
+        } else {
+            phaseIcon(state.phase)
         }
     }
 

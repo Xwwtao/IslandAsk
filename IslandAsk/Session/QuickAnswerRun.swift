@@ -18,12 +18,16 @@ final class QuickAnswerRun {
     /// 去掉空白和标点后的问题：和最终转录比较，判断提前请求能不能用。
     let normalizedQuestion: String
     let speculative: Bool
+    /// M-C1：本地已确定的意图（没说话 = collect），透传给大模型。
+    let intentHint: LLMIntent?
     let startedAt: ContinuousClock.Instant
 
     /// 创建后立即由调度器设置。
     var task: Task<Result<LLMAnswer, any Error>, Never>?
 
     private(set) var summary: String?
+    /// M-C1：summary 到达时模型已经给出的 intent（提示词把 intent 排在 summary 前面）。
+    private(set) var summaryIntent: LLMIntent?
     private(set) var summaryAt: ContinuousClock.Instant?
     /// 采用后才设置：summary 到了就回调（已经到了的话调度器会立即补一次）。
     var summaryHandler: ((String) -> Void)?
@@ -39,11 +43,18 @@ final class QuickAnswerRun {
     var llmMs: Int?
     var activityUpdateMs: Int?
 
-    init(sessionID: UUID, question: String, speculative: Bool, startedAt: ContinuousClock.Instant) {
+    init(
+        sessionID: UUID,
+        question: String,
+        speculative: Bool,
+        intentHint: LLMIntent? = nil,
+        startedAt: ContinuousClock.Instant
+    ) {
         self.sessionID = sessionID
         self.question = question
         self.normalizedQuestion = Self.normalize(question)
         self.speculative = speculative
+        self.intentHint = intentHint
         self.startedAt = startedAt
     }
 
@@ -52,9 +63,10 @@ final class QuickAnswerRun {
         return SessionTiming.milliseconds(summaryAt - llmStartedAt)
     }
 
-    func deliverSummary(_ summary: String) {
+    func deliverSummary(_ summary: String, intent: LLMIntent?) {
         guard self.summary == nil else { return }
         self.summary = summary
+        summaryIntent = intent
         summaryAt = .now
         summaryHandler?(summary)
     }

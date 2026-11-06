@@ -27,10 +27,17 @@ extension SessionCoordinator {
         sessionID: UUID,
         question: String,
         speculative: Bool,
+        intentHint: LLMIntent? = nil,
         jpegTask: Task<Data?, Never>?,
         screenTextTask: Task<String?, Never>?
     ) -> QuickAnswerRun {
-        let run = QuickAnswerRun(sessionID: sessionID, question: question, speculative: speculative, startedAt: clock.now)
+        let run = QuickAnswerRun(
+            sessionID: sessionID,
+            question: question,
+            speculative: speculative,
+            intentHint: intentHint,
+            startedAt: clock.now
+        )
         run.task = Task { [weak self] in
             guard let self else { return .failure(LLMError.cancelled) }
             return await self.executeQuickAnswer(run, jpegTask: jpegTask, screenTextTask: screenTextTask)
@@ -57,7 +64,7 @@ extension SessionCoordinator {
         guard !Task.isCancelled else { return .failure(LLMError.cancelled) }
 
         logger.info(
-            "quick answer request session=\(sessionID.uuidString, privacy: .public) speculative=\(run.speculative, privacy: .public) chars=\(run.question.count, privacy: .public) jpegWaitMs=\(run.jpegWaitMs ?? -1, privacy: .public) ocrWaitMs=\(run.ocrWaitMs ?? -1, privacy: .public)"
+            "quick answer request session=\(sessionID.uuidString, privacy: .public) speculative=\(run.speculative, privacy: .public) intentHint=\(run.intentHint?.rawValue ?? "nil", privacy: .public) chars=\(run.question.count, privacy: .public) jpegWaitMs=\(run.jpegWaitMs ?? -1, privacy: .public) ocrWaitMs=\(run.ocrWaitMs ?? -1, privacy: .public)"
         )
         let result: Result<LLMAnswer, any Error>
         do {
@@ -67,8 +74,9 @@ extension SessionCoordinator {
                 screenText: screenText,
                 question: run.question,
                 history: [],
-                onSummary: { summary in
-                    await run.deliverSummary(summary)
+                intentHint: run.intentHint,
+                onSummary: { summary, intent in
+                    await run.deliverSummary(summary, intent: intent)
                 }
             )
             result = .success(answer)

@@ -27,6 +27,10 @@ nonisolated struct LLMAnswer: Codable, Sendable {
     let answer: String
     /// 快速模型判断是否需要会话页再用深度思考回答一次；没返回时调用方按 true 处理。
     var needsDeep: Bool? = nil
+    /// M-C1：模型判断的意图；无法识别时为 nil，调用方按 ask 处理。
+    var intent: LLMIntent? = nil
+    /// M-C1：卡片字段；模型没给时为 nil，卡片只用 summary / answer。
+    var card: CardFields? = nil
     /// 不在 CodingKeys 里、不参与 JSON 解析：ask 成功后填入最后一次请求的网络耗时和请求次数（含重试）。
     var network: NetworkTiming? = nil
     var attempts: Int? = nil
@@ -37,6 +41,130 @@ nonisolated struct LLMAnswer: Codable, Sendable {
         case summary
         case answer
         case needsDeep = "needs_deep"
+        case intent
+        case card
+    }
+}
+
+nonisolated extension LLMAnswer {
+    /// 写在扩展里，保留 memberwise init。intent / card 解析失败不算格式错误，按缺失处理。
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        summary = try container.decode(String.self, forKey: .summary)
+        answer = (try? container.decodeIfPresent(String.self, forKey: .answer)) ?? ""
+        needsDeep = try? container.decodeIfPresent(Bool.self, forKey: .needsDeep)
+        intent = (try? container.decodeIfPresent(String.self, forKey: .intent))
+            .flatMap { LLMIntent(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
+        card = try? container.decodeIfPresent(CardFields.self, forKey: .card)
+    }
+}
+
+/// M-C1：一次按键的意图（SPEC 第 4 节「分流与卡片」）。
+nonisolated enum LLMIntent: String, Codable, Sendable {
+    case ask
+    case collect
+    case both
+}
+
+/// 卡片里的一条关键信息（店名、地址、价格……）。
+nonisolated struct KeyInfo: Codable, Sendable, Hashable {
+    var label: String
+    var value: String
+}
+
+/// M-C1：快速档顺带整理出的卡片字段（SPEC 6.9）。全部可选，单个字段类型不对时只丢这个字段。
+nonisolated struct CardFields: Codable, Sendable {
+    var title: String?
+    var type: String?
+    var tags: [String]?
+    var keyInfo: [KeyInfo]?
+    var note: String?
+    var sourcePlatform: String?
+    var sourceTitle: String?
+    var translation: String?
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case type
+        case tags
+        case keyInfo = "key_info"
+        case note
+        case sourcePlatform = "source_platform"
+        case sourceTitle = "source_title"
+        case translation
+    }
+
+    init(
+        title: String? = nil,
+        type: String? = nil,
+        tags: [String]? = nil,
+        keyInfo: [KeyInfo]? = nil,
+        note: String? = nil,
+        sourcePlatform: String? = nil,
+        sourceTitle: String? = nil,
+        translation: String? = nil
+    ) {
+        self.title = title
+        self.type = type
+        self.tags = tags
+        self.keyInfo = keyInfo
+        self.note = note
+        self.sourcePlatform = sourcePlatform
+        self.sourceTitle = sourceTitle
+        self.translation = translation
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        title = try? container.decodeIfPresent(String.self, forKey: .title)
+        type = try? container.decodeIfPresent(String.self, forKey: .type)
+        tags = try? container.decodeIfPresent([String].self, forKey: .tags)
+        // 逐条解：某一条缺 label / value 只丢那一条。
+        keyInfo = (try? container.decodeIfPresent([LossyKeyInfo].self, forKey: .keyInfo))?.compactMap(\.value)
+        note = try? container.decodeIfPresent(String.self, forKey: .note)
+        sourcePlatform = try? container.decodeIfPresent(String.self, forKey: .sourcePlatform)
+        sourceTitle = try? container.decodeIfPresent(String.self, forKey: .sourceTitle)
+        translation = try? container.decodeIfPresent(String.self, forKey: .translation)
+    }
+
+    private struct LossyKeyInfo: Decodable {
+        let value: KeyInfo?
+
+        init(from decoder: any Decoder) throws {
+            value = try? KeyInfo(from: decoder)
+        }
+    }
+
+    static let maxTitleLength = 20
+    static let maxTags = 4
+    static let maxKeyInfo = 6
+    static let maxTranslationLength = 600
+
+    /// SPEC 6.9 的规范化：去空白、空串当 nil；title 截到 20 字，type 不在列表里按 other，tags 最多 4 个，
+    /// key_info 最多 6 条，translation 超长截断。
+    func normalized() -> CardFields {
+        func clean(_ text: String?) -> String? {
+            guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !text.isEmpty, text.lowercased() != "null" else { return nil }
+            return text
+        }
+        var result = CardFields()
+        result.title = clean(title).map { String($0.prefix(Self.maxTitleLength)) }
+        let rawType = clean(type)?.lowercased()
+        result.type = rawType.flatMap(CardType.init(rawValue:))?.rawValue ?? CardType.other.rawValue
+        var seenTags = Set<String>()
+        result.tags = (tags ?? []).compactMap(clean).filter { seenTags.insert($0).inserted }.prefix(Self.maxTags).map { $0 }
+        result.keyInfo = (keyInfo ?? []).compactMap { item in
+            guard let label = clean(item.label), let value = clean(item.value) else { return nil }
+            return KeyInfo(label: label, value: value)
+        }.prefix(Self.maxKeyInfo).map { $0 }
+        result.note = clean(note)
+        result.sourcePlatform = clean(sourcePlatform)
+        result.sourceTitle = clean(sourceTitle)
+        result.translation = clean(translation).map { text in
+            text.count > Self.maxTranslationLength ? String(text.prefix(Self.maxTranslationLength - 1)) + "…" : text
+        }
+        return result
     }
 }
 
@@ -62,7 +190,9 @@ nonisolated enum LLMStreamEvent: Sendable {
 nonisolated protocol LLMProvider: Sendable {
     var model: String { get }
     /// screenText：截图的 OCR 文字（M4），和截图一起放在第一条 user 消息里；nil 表示没有。
-    /// onSummary：流式返回中 summary 字段一完整就回调一次（已截断到 maxSummaryLength），用来提前更新灵动岛。
+    /// intentHint（M-C1）：本地已确定的意图。collect = 用户没说话，按收藏整理；ask = 用户点了「改为提问」；nil = 由模型判断。
+    /// onSummary：流式返回中 summary 字段一完整就回调一次（已截断到 maxSummaryLength），同时带上已经到达的 intent
+    /// （提示词把 intent 排在 summary 前面），用来提前更新灵动岛。
     /// 回调过之后请求再失败不会重试（摘要已经给出去了），直接抛错，由调用方降级处理。
     @concurrent
     func ask(
@@ -70,7 +200,8 @@ nonisolated protocol LLMProvider: Sendable {
         screenText: String?,
         question: String,
         history: [LLMTurn],
-        onSummary: (@Sendable (String) async -> Void)?
+        intentHint: LLMIntent?,
+        onSummary: (@Sendable (String, LLMIntent?) async -> Void)?
     ) async throws -> LLMAnswer
     /// 深度回答：开思考、流式返回。取消消费方的 Task（或停止迭代）会取消网络请求。
     func streamDeepAnswer(
@@ -83,14 +214,28 @@ nonisolated protocol LLMProvider: Sendable {
 
 nonisolated struct OpenAICompatibleProvider: LLMProvider {
 
-    /// SPEC 6.9 的系统提示词原文，加了 needs_deep 一行（快速回答够用时会话页不自动深度思考）。
-    /// JSON 模式要求提示词里出现 "json" 并给出格式示例，这里两者都有。
+    /// SPEC 6.9 的系统提示词（M-C1：同时完成意图判断、回答和卡片整理）。summary 按代码的 80 字上限（SPEC 已同步）。
+    /// JSON 模式要求提示词里出现 "json" 并给出格式示例，这里两者都有。intent 排在 summary 前面，流式提前取摘要时意图已经到了。
     static let systemPrompt = """
-        你是屏幕助手。用户会给你一张手机截图和一个口语化的问题（来自语音转写，可能有错别字）。请结合截图回答。
-        只输出 JSON：{"summary": "...", "answer": "...", "needs_deep": false}
-        summary：不超过 80 个汉字，直接给结论，不寒暄。
-        answer：完整回答，可使用 Markdown。
-        needs_deep：true 或 false。answer 已经完整准确回答了问题时为 false；需要逐项识别图中多个细节、多步推理、你没有把握，或 answer 只是概要时为 true。
+        你是屏幕助手兼收藏整理员。用户会给你一张手机截图和一句口语化的话（来自语音转写，可能有错别字，也可能为空）。
+        先判断用户意图：
+        - collect：用户要收藏、保存、记下这个内容（如「收藏」「存一下」「记一下」「以后看」），或者话为空；
+        - ask：用户在提问；
+        - both：既提问又要求收藏。
+        只输出 JSON：
+        {"intent": "ask", "summary": "...", "answer": "...", "needs_deep": false,
+         "card": {"title": "...", "type": "article", "tags": ["..."], "key_info": [{"label": "...", "value": "..."}],
+                  "note": null, "source_platform": null, "source_title": null, "translation": null}}
+        summary：不超过 80 个汉字，显示在灵动岛。ask / both 时直接给结论，不寒暄；collect 时概括收藏了什么。
+        answer：ask / both 时是完整回答，可使用 Markdown；collect 时是 2–4 句的内容摘要。
+        needs_deep：true 或 false，只在 ask / both 时有意义，collect 时为 false。answer 已经完整准确回答了问题时为 false；需要逐项识别图中多个细节、多步推理、你没有把握，或 answer 只是概要时为 true。
+        card.title：不超过 20 个汉字，概括截图内容本身（不是概括问题）。
+        card.type：article / product / place / event / recipe / knowledge / media / chat / other 之一。
+        card.tags：1–4 个中文短标签。
+        card.key_info：截图里值得单独记下的信息，如店名、地址、价格、时间、书名、作者，最多 6 条；没有就给空数组。
+        card.note：用户话里除收藏指令之外的附注（如「周末去」），没有时为 null。
+        card.source_platform / card.source_title：根据界面特征判断截图来自哪个 App 或网站、原内容的标题；看不出来时为 null，不要猜。
+        card.translation：截图主要内容不是中文时，给出中文翻译，最多 600 字，超出时只翻译开头并以「…」结尾；是中文时为 null。
         如果截图与问题无关或看不清，在 summary 中直接说明。
         """
 
@@ -198,7 +343,8 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         screenText: String?,
         question: String,
         history: [LLMTurn],
-        onSummary: (@Sendable (String) async -> Void)?
+        intentHint: LLMIntent?,
+        onSummary: (@Sendable (String, LLMIntent?) async -> Void)?
     ) async throws -> LLMAnswer {
         let logger = Self.makeLogger()
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -206,16 +352,22 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
             throw LLMError.missingAPIKey
         }
 
-        let body = try makeRequestBody(imageJPEG: imageJPEG, screenText: screenText, question: question, history: history)
+        let body = try makeRequestBody(
+            imageJPEG: imageJPEG,
+            screenText: screenText,
+            question: question,
+            history: history,
+            intentHint: intentHint
+        )
         logger.info(
-            "ask start model=\(model, privacy: .public) imageBytes=\(imageJPEG?.count ?? 0, privacy: .public) screenTextChars=\(screenText?.count ?? 0, privacy: .public) questionChars=\(question.count, privacy: .public) history=\(history.count, privacy: .public) bodyBytes=\(body.count, privacy: .public)"
+            "ask start model=\(model, privacy: .public) intentHint=\(intentHint?.rawValue ?? "nil", privacy: .public) imageBytes=\(imageJPEG?.count ?? 0, privacy: .public) screenTextChars=\(screenText?.count ?? 0, privacy: .public) questionChars=\(question.count, privacy: .public) history=\(history.count, privacy: .public) bodyBytes=\(body.count, privacy: .public)"
         )
 
         var attempt = 1
         let summaryDelivered = OSAllocatedUnfairLock(initialState: false)
-        let deliverSummary: @Sendable (String) async -> Void = { summary in
+        let deliverSummary: @Sendable (String, LLMIntent?) async -> Void = { summary, intent in
             summaryDelivered.withLock { $0 = true }
-            await onSummary?(summary)
+            await onSummary?(summary, intent)
         }
         while true {
             do {
@@ -410,7 +562,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         attempt: Int,
         metrics: TransactionMetricsLogger,
         logger: Logger,
-        onSummary: @Sendable (String) async -> Void
+        onSummary: @Sendable (String, LLMIntent?) async -> Void
     ) async throws -> LLMAnswer {
         var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
         request.httpMethod = "POST"
@@ -486,10 +638,12 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
                         let summary = Self.normalizedSummary(raw, logger: logger)
                         if !summary.isEmpty {
                             summarySent = true
+                            let intent = Self.completedStringField("intent", in: content)
+                                .flatMap { LLMIntent(rawValue: $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) }
                             logger.info(
-                                "quick stream summary ready chars=\(summary.count, privacy: .public) elapsedMs=\(Self.milliseconds(ContinuousClock.now - startedAt), privacy: .public)"
+                                "quick stream summary ready chars=\(summary.count, privacy: .public) intent=\(intent?.rawValue ?? "nil", privacy: .public) elapsedMs=\(Self.milliseconds(ContinuousClock.now - startedAt), privacy: .public)"
                             )
-                            await onSummary(summary)
+                            await onSummary(summary, intent)
                         }
                     }
                 }
@@ -551,7 +705,8 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
     // MARK: - 流式 JSON 里提前取字段
 
     /// 在还没收完的 JSON 文本里找顶层字符串字段 key 的值：值的结束引号已经到了才返回（已解码转义），否则 nil。
-    /// 只做够用的扫描：跳过其它字符串字面量里出现的同名文字，不处理嵌套对象里的同名 key（快速档 JSON 是扁平的）。
+    /// 只做够用的扫描：跳过其它字符串字面量里出现的同名文字，不区分嵌套层级（快速档的 intent、summary 排在 card 对象前面，
+    /// 先遇到的就是顶层字段）。
     static func completedStringField(_ key: String, in text: String) -> String? {
         let chars = Array(text.unicodeScalars)
         let keyScalars = Array(key.unicodeScalars)
@@ -606,23 +761,25 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         imageJPEG: Data?,
         screenText: String?,
         question: String,
-        history: [LLMTurn]
+        history: [LLMTurn],
+        intentHint: LLMIntent?
     ) throws -> Data {
         let messages = makeMessages(
             systemPrompt: Self.systemPrompt,
             imageJPEG: imageJPEG,
             screenText: screenText,
-            question: question,
+            question: Self.quickQuestionText(question, intentHint: intentHint),
             history: history
         )
         let body: [String: Any] = [
             "model": model,
             "messages": messages,
             // 与 SPEC 6.9 的偏差：快速档改为流式，summary 一完整就更新灵动岛（M4 耗时优化）。
+            // M-C1：max_tokens 从 2048 上调到 3072，输出多了卡片字段和翻译。
             "stream": true,
             // 流式时最后一个 chunk 返回 usage（已真机确认）。
             "stream_options": ["include_usage": true],
-            "max_tokens": 2048,
+            "max_tokens": 3072,
             "thinking": ["type": "disabled"],
             // TODO: 核对官方文档：DeepSeek 文档未说明 json_object 能否与图片输入、流式同时使用，需真机确认；
             // 若返回 400，去掉这一项，依靠 parseAnswer 的代码块兜底解析。
@@ -658,6 +815,24 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         return try JSONSerialization.data(withJSONObject: body)
     }
 
+    /// 没说话但要提问时（「改为提问」、深度回答）的默认问法。
+    static let implicitQuestion = "请解释这张截图的主要内容。"
+
+    /// 快速档 user 文字：把本地已确定的意图写进去。没说话时不再用占位句（模型会把占位句当成提问）。
+    static func quickQuestionText(_ question: String, intentHint: LLMIntent?) -> String {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        switch intentHint {
+        case .collect:
+            let lead = "（用户没有说话。请按 intent = collect 整理这张截图。）"
+            return trimmed.isEmpty ? lead : "\(trimmed)\n\n\(lead)"
+        case .ask:
+            let question = trimmed.isEmpty ? Self.implicitQuestion : trimmed
+            return "\(question)\n\n（用户已确认这次是提问，intent 必须为 ask。）"
+        case .both, nil:
+            return trimmed.isEmpty ? "（用户没有说话。）" : trimmed
+        }
+    }
+
     private func makeMessages(
         systemPrompt: String,
         imageJPEG: Data?,
@@ -666,7 +841,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         history: [LLMTurn]
     ) -> [[String: Any]] {
         let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        let turns = history + [LLMTurn(role: .user, content: trimmedQuestion.isEmpty ? "请看这张截图。" : trimmedQuestion)]
+        let turns = history + [LLMTurn(role: .user, content: trimmedQuestion.isEmpty ? Self.implicitQuestion : trimmedQuestion)]
         let trimmedScreenText = screenText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let screenText = trimmedScreenText?.isEmpty == false ? trimmedScreenText : nil
 
@@ -723,10 +898,17 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         guard !summary.isEmpty else {
             throw LLMError.badResponse("summary 为空")
         }
+        let card = raw.card?.normalized()
         logger.info(
-            "answer parsed summaryChars=\(summary.count, privacy: .public) answerChars=\(answer.count, privacy: .public) needsDeep=\(raw.needsDeep.map(String.init(describing:)) ?? "nil", privacy: .public)"
+            "answer parsed intent=\(raw.intent?.rawValue ?? "nil", privacy: .public) summaryChars=\(summary.count, privacy: .public) answerChars=\(answer.count, privacy: .public) needsDeep=\(raw.needsDeep.map(String.init(describing:)) ?? "nil", privacy: .public) hasCard=\(card != nil, privacy: .public) type=\(card?.type ?? "nil", privacy: .public) tags=\(card?.tags?.count ?? 0, privacy: .public) keyInfo=\(card?.keyInfo?.count ?? 0, privacy: .public) translationChars=\(card?.translation?.count ?? 0, privacy: .public)"
         )
-        return LLMAnswer(summary: summary, answer: answer.isEmpty ? summary : answer, needsDeep: raw.needsDeep)
+        return LLMAnswer(
+            summary: summary,
+            answer: answer.isEmpty ? summary : answer,
+            needsDeep: raw.needsDeep,
+            intent: raw.intent,
+            card: card
+        )
     }
 
     /// 去首尾空白，超过 maxSummaryLength 截断加「…」。流式提前取到的 summary 和最终解析共用。

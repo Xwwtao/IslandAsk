@@ -23,7 +23,7 @@ enum AppDatabase {
     static var context: ModelContext { container.mainContext }
 
     private static func makeContainer() -> ModelContainer {
-        let schema = Schema([AskSession.self, ChatMessage.self])
+        let schema = Schema([AskSession.self, ChatMessage.self, Card.self])
         // App Group 没配好时 groupContainer 会失败，退回默认位置，保证 App 能用。
         let configuration: ModelConfiguration
         if AppGroup.isContainerAvailable {
@@ -59,6 +59,33 @@ enum AppDatabase {
                 "database fetch failed session=\(id.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
             return nil
+        }
+    }
+
+    static func fetchCard(id: UUID) -> Card? {
+        var descriptor = FetchDescriptor<Card>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        do {
+            return try context.fetch(descriptor).first
+        } catch {
+            logger.error(
+                "database fetch failed card=\(id.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    static func fetchCards(ids: Set<UUID>) -> [Card] {
+        guard !ids.isEmpty else { return [] }
+        let idList = Array(ids)
+        let descriptor = FetchDescriptor<Card>(predicate: #Predicate { idList.contains($0.id) })
+        do {
+            return try context.fetch(descriptor)
+        } catch {
+            logger.error(
+                "database fetch failed cards=\(ids.count, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return []
         }
     }
 

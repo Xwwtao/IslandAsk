@@ -71,7 +71,9 @@
 				Shared/AskActivityAttributes.swift,
 				Shared/CopyAnswerIntent.swift,
 				Shared/DismissAskIntent.swift,
+				Shared/SaveCardIntent.swift,
 				Shared/StopAskIntent.swift,
+				Shared/SwitchToAskIntent.swift,
 			);
 			target = B6562F9230970285008E002D /* IslandAskWidgetExtension */;
 		};

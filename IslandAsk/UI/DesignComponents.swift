@@ -93,8 +93,11 @@ struct SessionStatusBadge: View {
                 .symbolEffect(.variableColor.iterative, options: .repeating)
                 .modifier(BadgeStyle(tint: status.tint))
         case .failed:
-            Label(status.displayName, systemImage: status.symbolName)
-                .modifier(BadgeStyle(tint: status.tint))
+            // 只显示感叹号图标：列表行宽度不够时文字会被挤成竖排，把胶囊撑变形。
+            Image(systemName: status.symbolName)
+                .font(.subheadline)
+                .foregroundStyle(status.tint)
+                .accessibilityLabel(status.displayName)
         }
     }
 

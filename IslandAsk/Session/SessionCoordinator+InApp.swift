@@ -33,8 +33,12 @@ extension SessionCoordinator {
             logger.error("deep answer skipped: session not found session=\(sessionID.uuidString, privacy: .public)")
             return
         }
-        let question = session.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard session.statusValue == .answered, session.deepAnswer == nil, !question.isEmpty else {
+        // M-C1：没说话但点过「改为提问」的卡片用默认问法；收藏卡片不做深度回答。
+        let hasTranscript = !session.transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let question = session.effectiveQuestion
+        let isCollect = session.card?.intentValue == .collect
+        guard session.statusValue == .answered, session.deepAnswer == nil,
+              hasTranscript || session.card?.intent == LLMIntent.ask.rawValue, !isCollect else {
             logger.info(
                 "deep answer skipped session=\(sessionID.uuidString, privacy: .public) status=\(session.status, privacy: .public) hasDeep=\(session.deepAnswer != nil, privacy: .public)"
             )
@@ -221,62 +225,9 @@ extension SessionCoordinator {
     }
 
     /// 失败会话在 App 内重新提问（SPEC 第 8 节：断网或 API 超时，App 内可重试）。只更新数据库，不碰灵动岛。
+    /// M-C1：与卡片的「重新整理」是同一件事，统一走 reorganizeCard。
     func retryAnswer(sessionID: UUID) async {
-        guard let session = AppDatabase.fetchSession(id: sessionID) else {
-            logger.error("retry failed: session not found session=\(sessionID.uuidString, privacy: .public)")
-            return
-        }
-        let question = session.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, session.statusValue == .failed, answeringSessionID != sessionID else {
-            logger.notice(
-                "retry ignored session=\(sessionID.uuidString, privacy: .public) status=\(session.status, privacy: .public) chars=\(question.count, privacy: .public)"
-            )
-            return
-        }
-        guard inAppRequestSessionIDs.insert(sessionID).inserted else {
-            logger.notice("retry ignored: request in flight session=\(sessionID.uuidString, privacy: .public)")
-            return
-        }
-        defer { inAppRequestSessionIDs.remove(sessionID) }
-
-        let screenshotURL = session.screenshotURL
-        session.statusValue = .thinking
-        session.clearFailure()
-        AppDatabase.save(reason: "retry thinking session=\(sessionID.uuidString)")
-        logger.info("retry start session=\(sessionID.uuidString, privacy: .public)")
-
-        let backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "islandask.retry")
-        defer {
-            if backgroundTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTaskID)
-            }
-        }
-
-        do {
-            let imageJPEG = await Self.uploadJPEGIfPossible(url: screenshotURL, sessionID: sessionID)
-            let screenText = await screenTextForInAppRequest(sessionID: sessionID)
-            let provider = try OpenAICompatibleProvider.fromSettings()
-            let answer = try await provider.ask(
-                imageJPEG: imageJPEG,
-                screenText: screenText,
-                question: question,
-                history: [],
-                onSummary: nil
-            )
-            session.summary = answer.summary
-            session.answer = answer.answer
-            session.needsDeepAnswer = answer.needsDeep ?? true
-            session.statusValue = .answered
-            AppDatabase.save(reason: "retry answered session=\(sessionID.uuidString)")
-            appendTokenUsage(sessionID: sessionID, kind: .retry, usage: answer.usage, model: provider.model)
-            logger.info("retry succeeded session=\(sessionID.uuidString, privacy: .public)")
-        } catch {
-            session.markFailed(.answerFailure(for: error))
-            AppDatabase.save(reason: "retry failed session=\(sessionID.uuidString)")
-            logger.error(
-                "retry failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-        }
+        await reorganizeCard(id: sessionID)
     }
 
     /// 追加一条 token 用量记录（会话页 Token 卡片）。没拿到 usage 时只记日志。

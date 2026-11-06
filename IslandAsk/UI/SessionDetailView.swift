@@ -10,6 +10,8 @@
 //  数据：追问沿用同一张截图和上下文，由 SessionCoordinator.askFollowUp 发送并写库；本页只读 @Query。
 //  回答分两档：灵动岛用的快速回答先显示；needs_deep 不为 false 时打开本页自动用深度思考流式生成长回答，
 //  流式中的内容来自 StreamingReplyStore，结束后落库。失败且有问题文字的会话显示「重新提问」（SPEC 第 8 节）。
+//  M-C1：本页同时是卡片详情（卡片与会话同 id）。截图下面是卡片信息（CardInfoSection）；工具栏可收藏、编辑、删除。
+//  收藏卡片（intent = collect）不显示摘要卡、问答和追问输入框，只显示内容摘要；整理失败时显示「重新整理」。
 //
 
 import SwiftData
@@ -27,6 +29,8 @@ struct SessionDetailView: View {
     let sessionID: UUID
 
     @Query private var sessions: [AskSession]
+    @Query private var cards: [Card]
+    @Environment(\.dismiss) private var dismiss
 
     @State private var draft = ""
     @State private var isSending = false
@@ -36,12 +40,20 @@ struct SessionDetailView: View {
     @State private var player = RecordingPlayer()
     @State private var didAutoStartDeepAnswer = false
     @State private var showsScreenText = false
+    @State private var showsCardEditor = false
+    @State private var showsDeleteConfirmation = false
     @FocusState private var inputFocused: Bool
 
     init(sessionID: UUID) {
         self.sessionID = sessionID
         _sessions = Query(filter: #Predicate<AskSession> { $0.id == sessionID })
+        _cards = Query(filter: #Predicate<Card> { $0.id == sessionID })
     }
+
+    private var card: Card? { cards.first }
+
+    /// 收藏卡片：不做深度回答、不显示问答和追问。
+    private var isCollect: Bool { card?.intentValue == .collect }
 
     var body: some View {
         Group {
@@ -66,6 +78,7 @@ struct SessionDetailView: View {
                   session.statusValue == .answered,
                   session.deepAnswer == nil,
                   session.needsDeepAnswer != false,
+                  !isCollect,
                   liveReply == nil else { return }
             didAutoStartDeepAnswer = true
             SessionCoordinator.shared.startDeepAnswer(sessionID: sessionID)
@@ -78,6 +91,22 @@ struct SessionDetailView: View {
         }
         .sheet(isPresented: $showsScreenText) {
             ScreenTextSheet(text: sessions.first?.ocrText ?? "")
+        }
+        .toolbar { cardToolbar }
+        .sheet(isPresented: $showsCardEditor) {
+            if let card {
+                CardEditSheet(card: card)
+            }
+        }
+        .confirmationDialog("删除这张卡片？", isPresented: $showsDeleteConfirmation, titleVisibility: .visible) {
+            Button("删除", role: .destructive) {
+                logger.info("card detail delete session=\(sessionID.uuidString, privacy: .public)")
+                SessionCoordinator.shared.deleteCard(id: sessionID)
+                dismiss()
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("截图和录音也会一起删除")
         }
         .alert("追问失败", isPresented: $followUpError.isPresented, presenting: followUpError) { _ in
             Button("好", role: .cancel) {}
@@ -94,9 +123,16 @@ struct SessionDetailView: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.section) {
                     screenshotSection(session)
                         .staggeredAppear(0)
-                    QuestionBubble(text: session.transcript, date: session.createdAt, player: player)
-                        .staggeredAppear(1)
-                    if session.statusValue == .answered, let summary = session.summary, !summary.isEmpty {
+                    if let card, card.organizeStatusValue != .pending || card.title != nil {
+                        CardInfoSection(card: card)
+                            .staggeredAppear(1)
+                    }
+                    // 收藏时没说话就不显示问题气泡；说了附注（如「收藏，周末去」）仍显示。
+                    if !isCollect || !session.transcript.isEmpty {
+                        QuestionBubble(text: session.transcript, date: session.createdAt, player: player)
+                            .staggeredAppear(1)
+                    }
+                    if !isCollect, session.statusValue == .answered, let summary = session.summary, !summary.isEmpty {
                         IslandSummaryCard(summary: summary)
                             .staggeredAppear(2)
                     }
@@ -111,7 +147,9 @@ struct SessionDetailView: View {
                             cancelledSpeculativeRequests: session.timing?.cancelledSpeculativeRequests ?? 0
                         )
                     }
-                    followUpSection(session)
+                    if !isCollect {
+                        followUpSection(session)
+                    }
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }
                 .padding(Theme.Spacing.page)
@@ -124,7 +162,7 @@ struct SessionDetailView: View {
                 withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
             }
             .safeAreaInset(edge: .bottom) {
-                if session.statusValue == .answered {
+                if session.statusValue == .answered, !isCollect {
                     inputBar(session)
                 }
             }
@@ -165,7 +203,9 @@ struct SessionDetailView: View {
         case .listening:
             WaitingCard(status: .listening, text: "正在听你说…")
         case .thinking:
-            WaitingCard(status: .thinking, text: "正在看截图、想答案…")
+            WaitingCard(status: .thinking, text: isCollect ? "正在整理这张截图…" : "正在看截图、想答案…")
+        case .answered where isCollect:
+            collectSummaryCard(session)
         case .answered:
             answeredCard(session)
         case .failed:
@@ -209,6 +249,23 @@ struct SessionDetailView: View {
         }
     }
 
+    /// 收藏卡片的内容摘要（快速档 collect 时 answer 是 2–4 句摘要）。
+    private func collectSummaryCard(_ session: AskSession) -> some View {
+        let text = card?.summary ?? session.answer ?? session.summary ?? ""
+        return AnswerCard(badge: "内容摘要", isThinking: false) {
+            MarkdownText(markdown: text)
+        } actions: {
+            AnswerActions(text: text)
+        }
+    }
+
+    /// 能不能重跑快速档：有问题文字或有截图。没说话的卡片叫「重新整理」。
+    private func retryTitle(_ session: AskSession) -> String? {
+        if !session.transcript.isEmpty, !isCollect { return "重新提问" }
+        if !session.transcript.isEmpty || session.screenshotURL != nil { return "重新整理" }
+        return nil
+    }
+
     private func failedCard(_ session: AskSession) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Label(session.errorMessage ?? "回答失败", systemImage: "exclamationmark.triangle.fill")
@@ -220,14 +277,14 @@ struct SessionDetailView: View {
                     .foregroundStyle(.secondary)
             }
             HStack(spacing: 10) {
-                if !session.transcript.isEmpty {
+                if let retryTitle = retryTitle(session) {
                     Button {
                         retry(session)
                     } label: {
                         if isRetrying {
                             ProgressView()
                         } else {
-                            Label("重新提问", systemImage: "arrow.clockwise")
+                            Label(retryTitle, systemImage: "arrow.clockwise")
                         }
                     }
                     .buttonStyle(.glassProminent)
@@ -306,6 +363,36 @@ struct SessionDetailView: View {
             }
         case nil:
             EmptyView()
+        }
+    }
+
+    // MARK: - 卡片工具栏
+
+    @ToolbarContentBuilder
+    private var cardToolbar: some ToolbarContent {
+        if let card {
+            ToolbarItem(placement: .primaryAction) {
+                Button(card.isSavedValue ? "取消收藏" : "收藏", systemImage: card.isSavedValue ? "bookmark.fill" : "bookmark") {
+                    logger.info(
+                        "card detail set saved=\(!card.isSavedValue, privacy: .public) session=\(sessionID.uuidString, privacy: .public)"
+                    )
+                    SessionCoordinator.shared.setSaved(cardID: card.id, !card.isSavedValue)
+                }
+                .contentTransition(.symbolEffect(.replace))
+                .sensoryFeedback(.success, trigger: card.isSavedValue) { _, new in new }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                Menu("更多", systemImage: "ellipsis") {
+                    Button("编辑标题和标签", systemImage: "pencil") {
+                        showsCardEditor = true
+                    }
+                    .disabled(card.isBusy)
+                    Button("删除", systemImage: "trash", role: .destructive) {
+                        showsDeleteConfirmation = true
+                    }
+                    .disabled(card.isBusy)
+                }
+            }
         }
     }
 

@@ -3,9 +3,11 @@
 //  IslandAsk
 //
 //  快捷指令与 Action Button 设置指引（SPEC 第 6.12 节，M4 图文版）。引导页和设置页共用。
-//  - 配了 iCloud 分享链接（ShortcutLink.iCloudURL）：先给「一键添加」，手动步骤折叠起来。
+//  - 配了 iCloud 分享链接（ShortcutLink.iCloudURL）：两步。第 1 步「一键添加」，下面折叠着手动创建的子步骤（不编号）；
+//    第 2 步设置操作按钮。没有链接时：第 1–3 步手动创建，第 4 步设置操作按钮。
+//    （以前有链接时手动步骤折叠、第 4 步始终显示，页面一打开只看到孤零零的「4」。）
 //  - 每一步配一张用 SwiftUI 画的示意图，不依赖截图素材，深浅色都能看。
-//  - 把操作按钮设为这个快捷指令只能在系统设置里手动完成，所以第 4 步始终显示。
+//  - 把操作按钮设为这个快捷指令只能在系统设置里手动完成，所以这一步始终显示。
 //
 
 import SwiftUI
@@ -18,74 +20,95 @@ private let logger = Logger(
 
 struct ShortcutGuideView: View {
 
-    @State private var showsManualSteps = ShortcutLink.iCloudURL == nil
+    @State private var showsManualSteps = false
     @ScaledMetric(relativeTo: .footnote) private var stepBadgeSide: CGFloat = 22
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let shareURL = ShortcutLink.iCloudURL {
-                Link(destination: shareURL) {
-                    Label("一键添加「屏幕提问」快捷指令", systemImage: "plus.square.on.square")
-                        .bold()
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.glassProminent)
-                .controlSize(.large)
-                .simultaneousGesture(TapGesture().onEnded {
-                    logger.info("shortcut guide: open iCloud share link")
-                })
+                step("1", "添加「屏幕提问」快捷指令。") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Link(destination: shareURL) {
+                            Label("一键添加", systemImage: "plus.square.on.square")
+                                .bold()
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.glassProminent)
+                        .controlSize(.large)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            logger.info("shortcut guide: open iCloud share link")
+                        })
 
-                DisclosureGroup("手动创建快捷指令", isExpanded: $showsManualSteps) {
-                    manualSteps
-                        .padding(.top, 10)
+                        DisclosureGroup("一键添加不可用？手动创建", isExpanded: $showsManualSteps) {
+                            manualSteps(numbered: false)
+                                .padding(.top, 10)
+                        }
+                        .font(.footnote)
+                    }
                 }
-                .font(.footnote)
+                actionButtonStep(index: "2")
             } else {
-                manualSteps
+                manualSteps(numbered: true)
+                actionButtonStep(index: "4")
             }
+        }
+    }
 
-            step(4, "进入 设置 → 操作按钮，滑到「快捷指令」，选择「屏幕提问」。") {
-                ActionButtonSettingsMock()
+    private func actionButtonStep(index: String) -> some View {
+        step(index, "进入 设置 → 操作按钮，滑到「快捷指令」，选择「屏幕提问」。") {
+            ActionButtonSettingsMock()
+        }
+    }
+
+    /// 手动创建的三步。作为一键添加的备选时不编号（用圆点），避免和主步骤的序号混在一起。
+    private func manualSteps(numbered: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            step(numbered ? "1" : nil, "打开快捷指令 App，点右上角「＋」新建快捷指令，命名为「屏幕提问」。") {
+                NewShortcutMock()
             }
-
+            step(numbered ? "2" : nil, "添加动作「截屏」。") {
+                ShortcutEditorMock(showsAskAction: false)
+            }
+            step(numbered ? "3" : nil, "再添加动作「对屏幕提问」，把「截图」参数设为上一步的「截屏」。") {
+                ShortcutEditorMock(showsAskAction: true)
+            }
             if let shortcutsURL = ShortcutLink.shortcutsAppURL {
                 Link(destination: shortcutsURL) {
                     Label("打开快捷指令 App", systemImage: "arrow.up.forward.app")
                 }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.capsule)
+                .padding(.leading, stepBadgeSide + 10)
             }
         }
     }
 
-    private var manualSteps: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            step(1, "打开快捷指令 App，点右上角「＋」新建快捷指令，命名为「屏幕提问」。") {
-                NewShortcutMock()
-            }
-            step(2, "添加动作「截屏」。") {
-                ShortcutEditorMock(showsAskAction: false)
-            }
-            step(3, "再添加动作「对屏幕提问」，把「截图」参数设为上一步的「截屏」。") {
-                ShortcutEditorMock(showsAskAction: true)
-            }
-        }
-    }
-
+    /// index 为 nil 时显示小圆点（子步骤）。
     private func step<Illustration: View>(
-        _ index: Int,
+        _ index: String?,
         _ text: String,
         @ViewBuilder illustration: () -> Illustration
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text("\(index)")
-                    .font(.caption.bold())
-                    .monospacedDigit()
-                    .foregroundStyle(.white)
-                    .frame(width: stepBadgeSide, height: stepBadgeSide)
-                    .background(Color.accentColor.gradient, in: .circle)
-                    .accessibilityLabel("第 \(index) 步")
+                Group {
+                    if let index {
+                        Text(index)
+                            .font(.caption.bold())
+                            .monospacedDigit()
+                            .foregroundStyle(.white)
+                            .frame(width: stepBadgeSide, height: stepBadgeSide)
+                            .background(Color.accentColor.gradient, in: .circle)
+                            .accessibilityLabel("第 \(index) 步")
+                    } else {
+                        Circle()
+                            .fill(.secondary)
+                            .frame(width: 6, height: 6)
+                            .frame(width: stepBadgeSide)
+                            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + 4 }
+                            .accessibilityHidden(true)
+                    }
+                }
                 Text(text)
                     .font(.footnote)
                     .foregroundStyle(.primary)
@@ -94,7 +117,6 @@ struct ShortcutGuideView: View {
             .accessibilityElement(children: .combine)
             illustration()
                 .padding(.leading, stepBadgeSide + 10)
-                .accessibilityHidden(true)
         }
     }
 }
@@ -116,6 +138,8 @@ private struct MockPanel<Content: View>: View {
             RoundedRectangle(cornerRadius: Theme.Radius.inner)
                 .strokeBorder(.separator)
         }
+        // 示意图只是装饰，旁白读步骤文字就够了。
+        .accessibilityHidden(true)
     }
 }
 

@@ -34,6 +34,8 @@ nonisolated struct TokenUsageRecord: Codable, Sendable, Equatable {
         case deep
         /// 会话页追问（深度档）。
         case followUp
+        /// M-C1：灵动岛收藏后点「改为提问」（快速档）。
+        case switchToAsk
 
         var displayName: String {
             switch self {
@@ -41,6 +43,7 @@ nonisolated struct TokenUsageRecord: Codable, Sendable, Equatable {
             case .retry: return "重新提问"
             case .deep: return "深度回答"
             case .followUp: return "追问"
+            case .switchToAsk: return "改为提问"
             }
         }
     }

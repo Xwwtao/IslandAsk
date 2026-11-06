@@ -7,6 +7,7 @@
 //    后台录音准备、App Group 这类排查项收进「诊断信息」。
 //  - 大模型：API 地址、Key（存 Keychain，提交或离开本页时保存）、模型名、截图文字识别开关。
 //  - 语音识别：识别语言，切换前先在本页下载目标语言的模型，下载成功才生效（模型只能在前台下载）。
+//  - 收藏（M-C1）：不说话时的行为（收藏 / 取消）、不说话判定时间。
 //  - 快捷指令：图文指引入口。
 //  静音检测阈值已从设置页去掉，固定用默认值（SilenceDetectionConfiguration.current）。
 //  所有设置下一次提问生效。
@@ -43,6 +44,10 @@ struct SettingsView: View {
     @State private var downloadProgress = 0.0
     @State private var languageError: String?
 
+    // 收藏
+    @State private var noSpeechCollects = AppSettings.noSpeechCollects
+    @State private var collectNoSpeechSeconds = AppSettings.collectNoSpeechSeconds
+
     // 历史记录
     @State private var retentionDays = AppSettings.historyRetentionDays
     @State private var storageBytes: Int64?
@@ -61,6 +66,7 @@ struct SettingsView: View {
             statusSection
             llmSection
             languageSection
+            collectSection
             historySection
             privacySection
             shortcutSection
@@ -363,6 +369,42 @@ struct SettingsView: View {
         Task { speechModelStatus = await SpeechModelManager.status() }
     }
 
+    // MARK: - 收藏
+
+    private var collectSection: some View {
+        Section {
+            Picker(selection: $noSpeechCollects) {
+                Text("收藏这一屏").tag(true)
+                Text("取消").tag(false)
+            } label: {
+                SettingsLabel("不说话时", systemName: "bookmark", color: .indigo)
+            }
+            .onChange(of: noSpeechCollects) { _, value in
+                AppSettings.noSpeechCollects = value
+                logger.info("settings: no speech collects changed value=\(value, privacy: .public)")
+            }
+            if noSpeechCollects {
+                Picker(selection: $collectNoSpeechSeconds) {
+                    ForEach(AppSettings.collectNoSpeechOptions, id: \.self) { seconds in
+                        Text("\(Int(seconds)) 秒").tag(seconds)
+                    }
+                } label: {
+                    SettingsLabel("判定时间", systemName: "timer", color: .teal)
+                }
+                .onChange(of: collectNoSpeechSeconds) { _, value in
+                    AppSettings.collectNoSpeechSeconds = value
+                    logger.info("settings: collect no speech seconds changed value=\(value, privacy: .public)")
+                }
+            }
+        } header: {
+            Text("收藏")
+        } footer: {
+            Text(noSpeechCollects
+                 ? "按下操作按钮后 \(Int(collectNoSpeechSeconds)) 秒内不说话，就把当前屏幕收藏起来。没有截图时等 6 秒后取消。"
+                 : "按下操作按钮后不说话，等 6 秒后取消。")
+        }
+    }
+
     // MARK: - 历史记录
 
     private var historySection: some View {
@@ -372,7 +414,7 @@ struct SettingsView: View {
                     Text(days == 0 ? "永久" : "\(days) 天").tag(days)
                 }
             } label: {
-                SettingsLabel("保留时长", systemName: "clock.arrow.circlepath", color: .brown)
+                SettingsLabel("未收藏的问答保留", systemName: "clock.arrow.circlepath", color: .brown)
             }
             .onChange(of: retentionDays) { _, value in
                 AppSettings.historyRetentionDays = value
@@ -389,7 +431,7 @@ struct SettingsView: View {
         } header: {
             Text("历史记录")
         } footer: {
-            Text("超过保留时长的会话，连同截图和录音，会在打开 App 时自动删除。")
+            Text("超过保留时长、没有收藏的卡片，连同截图和录音，会在打开 App 时自动删除。收藏的卡片不会过期。")
         }
     }
 

@@ -121,6 +121,7 @@ struct TimingCard: View {
         case .silence: return "静音自动结束"
         case .button: return "点了停止"
         case .maxDuration: return "到 60 秒上限"
+        case .noSpeechCollect: return "没说话，自动收藏"
         case nil: return nil
         }
     }

@@ -23,6 +23,12 @@ nonisolated struct AskActivityAttributes: ActivityAttributes {
             case failed
         }
 
+        /// M-C1：这次按键是提问还是收藏，决定 thinking / answered 的展示。nil 按 ask。
+        nonisolated enum Kind: String, Codable {
+            case ask
+            case collect
+        }
+
         var phase: Phase
         var transcriptTail: String
         var summary: String?
@@ -33,6 +39,16 @@ nonisolated struct AskActivityAttributes: ActivityAttributes {
         var errorHint: String? = nil
         /// M4：answered 态点过「复制」后为 true，按钮显示对勾。可选，理由同 errorHint。
         var answerCopied: Bool? = nil
+        /// M-C1 新增，全部可选，兼容旧的 Activity（SPEC 6.10）。
+        var kind: Kind? = nil
+        /// collect 时的卡片标题，最多 20 字。
+        var cardTitle: String? = nil
+        /// ask 回答后是否已点「收藏」。
+        var isSaved: Bool? = nil
+        /// 转录文字不为空时为 true，控制「改为提问」按钮。
+        var canSwitchToAsk: Bool? = nil
+
+        var isCollect: Bool { kind == .collect }
     }
 
     /// 会话 ID，与 App Group 容器 sessions/<sessionID>.png、<sessionID>.m4a 对应。
@@ -45,6 +61,8 @@ nonisolated extension AskActivityAttributes {
 
     static let urlScheme = "islandask"
     static let sessionHost = "session"
+    /// M-C1：islandask://card/<id>，供链接卡片和 Spotlight 使用（按键卡片与会话同 id）。
+    static let cardHost = "card"
 
     static func sessionURL(sessionID: String) -> URL {
         var components = URLComponents()
@@ -54,9 +72,11 @@ nonisolated extension AskActivityAttributes {
         return components.url ?? URL(string: "\(urlScheme)://\(sessionHost)")!
     }
 
-    /// 解析 islandask://session/<uuid>；不是本 App 的会话链接时返回 nil。
+    /// 解析 islandask://session/<uuid> 和 islandask://card/<uuid>；不是本 App 的链接时返回 nil。
     static func sessionID(from url: URL) -> UUID? {
-        guard url.scheme?.lowercased() == urlScheme, url.host()?.lowercased() == sessionHost else { return nil }
+        guard url.scheme?.lowercased() == urlScheme,
+              let host = url.host()?.lowercased(),
+              host == sessionHost || host == cardHost else { return nil }
         return UUID(uuidString: url.lastPathComponent)
     }
 }

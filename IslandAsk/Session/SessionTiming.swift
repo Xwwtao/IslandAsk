@@ -28,6 +28,8 @@ nonisolated struct SessionTiming: Codable, Sendable, Equatable {
         case silence
         case button
         case maxDuration
+        /// M-C1：有截图时不开口超时，按收藏处理。
+        case noSpeechCollect
     }
 
     /// 提前发的请求最后有没有用上。

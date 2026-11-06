@@ -40,6 +40,7 @@ nonisolated enum AppSettings {
         static let speechEndRMSDB: Double = -45
         static let endSilenceSeconds: Double = 1.5
         static let transcriptStableSeconds: Double = 1.5
+        /// 没有截图（或关掉了「不说话就收藏」）时，一直不开口多久就取消。
         static let noSpeechTimeoutSeconds: Double = 6
         static let maxRecordingSeconds: Double = 60
         /// 转录稳定多久就提前发快速档请求（说完判定仍是 transcriptStableSeconds）。
@@ -60,6 +61,8 @@ nonisolated enum AppSettings {
         static let screenTextRecognition = "llm.screenTextRecognition"
         static let historyRetentionDays = "history.retentionDays"
         static let showsTiming = "debug.showsTiming"
+        static let noSpeechCollects = "collect.noSpeechCollects"
+        static let collectNoSpeechSeconds = "collect.noSpeechSeconds"
     }
 
     private static var defaults: UserDefaults { .standard }
@@ -82,12 +85,34 @@ nonisolated enum AppSettings {
         set { defaults.set(newValue, forKey: Key.screenTextRecognition) }
     }
 
+    // MARK: - 收藏（M-C1）
+
+    /// 有截图时不说话的行为：true = 收藏（默认），false = 取消。
+    static var noSpeechCollects: Bool {
+        get { defaults.object(forKey: Key.noSpeechCollects) == nil ? true : defaults.bool(forKey: Key.noSpeechCollects) }
+        set { defaults.set(newValue, forKey: Key.noSpeechCollects) }
+    }
+
+    /// 设置页可选的「不说话判定时间」（秒）。
+    static let collectNoSpeechOptions: [Double] = [2, 3, 5]
+    static let defaultCollectNoSpeechSeconds: Double = 3
+
+    /// 有截图且开启「不说话就收藏」时，多久没有转录文字就收藏。
+    static var collectNoSpeechSeconds: Double {
+        get {
+            let value = defaults.double(forKey: Key.collectNoSpeechSeconds)
+            return collectNoSpeechOptions.contains(value) ? value : defaultCollectNoSpeechSeconds
+        }
+        set { defaults.set(newValue, forKey: Key.collectNoSpeechSeconds) }
+    }
+
     // MARK: - 历史记录
 
     /// 设置页可选的保留天数；0 = 永久保留（默认）。
     static let historyRetentionOptions = [0, 7, 30, 90]
 
     /// M4：超过这么多天的会话（连同截图、录音）在 App 回到前台时自动删除。
+    /// M-C1：只清理未收藏的卡片，收藏的永不过期。
     static var historyRetentionDays: Int {
         get { defaults.integer(forKey: Key.historyRetentionDays) }
         set { defaults.set(newValue, forKey: Key.historyRetentionDays) }

@@ -17,6 +17,9 @@
 //  - M4：失败文案统一走 UserFacingFailure（灵动岛短原因 + errorHint，会话页补充说明 + 操作）；
 //    起录前检查实时活动和麦克风/语音识别权限；录音期间并行跑 Vision 文字识别和截图压缩，问大模型前最多再等 OCR 1.5 秒。
 //  - M4 耗时优化：快速档流式，摘要一到就显示；转录稳定 0.8 秒先发请求（SessionCoordinator+QuickAnswer.swift）。
+//  - M-C1 分流：每次按键同时建 AskSession 和 Card（同 id）。有截图时不开口超时（默认 3 秒）按收藏处理：
+//    带 intentHint = collect 问快速档，灵动岛 kind = collect。说了话时由模型返回的 intent 决定 ask / collect / both。
+//    卡片的写入与按钮操作在 SessionCoordinator+Cards.swift。
 //  - 文件拆分：本文件是会话主流程；Live Activity 推送与清理在 SessionCoordinator+LiveActivity.swift，
 //    App 内深度回答 / 追问 / 重问在 SessionCoordinator+InApp.swift。
 //
@@ -195,7 +198,11 @@ final class SessionCoordinator {
         let transcriptionPreparedAt = clock.now
 
         // 静音检测只负责发事件；结束动作统一回调度器，和停止按钮同一条路径。
-        let detector = SilenceDetector { event in
+        // M-C1：有截图且设置里开着「不说话就收藏」时，不开口超时走收藏（stopListening），否则照旧取消。
+        let collectsOnNoSpeech = SilenceDetectionConfiguration.collectsOnNoSpeech(hasScreenshot: screenshotURL != nil)
+        let detector = SilenceDetector(
+            configuration: .current(hasScreenshot: screenshotURL != nil)
+        ) { event in
             switch event {
             case .transcriptSettled(let text):
                 SessionCoordinator.shared.speculate(sessionID: sessionID, text: text)
@@ -209,7 +216,14 @@ final class SessionCoordinator {
                 }
             case .noSpeechTimeout:
                 Task {
-                    await SessionCoordinator.shared.cancel(sessionID: sessionID.uuidString, failure: .noSpeech)
+                    if collectsOnNoSpeech {
+                        await SessionCoordinator.shared.stopListening(
+                            sessionID: sessionID.uuidString,
+                            trigger: .noSpeechCollect
+                        )
+                    } else {
+                        await SessionCoordinator.shared.cancel(sessionID: sessionID.uuidString, failure: .noSpeech)
+                    }
                 }
             }
         }
@@ -247,13 +261,14 @@ final class SessionCoordinator {
             throw SessionCoordinatorError.transcriptionStartFailed
         }
 
-        // SPEC 第 4 节第 5.5 步：写入 AskSession（status = listening）。
-        let session = AskSession(
-            id: sessionID,
-            screenshotPath: screenshotURL.map(ScreenshotStore.relativePath(for:))
-        )
+        // SPEC 第 4 节第 5.5 步：写入 AskSession（status = listening），同时建卡片（M-C1，同 id，organizeStatus = pending）。
+        let screenshotPath = screenshotURL.map(ScreenshotStore.relativePath(for:))
+        let session = AskSession(id: sessionID, screenshotPath: screenshotPath)
+        let card = Card(id: sessionID, createdAt: session.createdAt, origin: .press, screenshotPath: screenshotPath)
         AppDatabase.context.insert(session)
-        AppDatabase.save(reason: "session inserted listening")
+        AppDatabase.context.insert(card)
+        card.session = session
+        AppDatabase.save(reason: "session and card inserted listening")
 
         self.transcription = transcription
         silenceDetector = detector
@@ -373,9 +388,15 @@ final class SessionCoordinator {
         silenceDetector = nil
 
         let question = finalText.trimmingCharacters(in: .whitespacesAndNewlines)
-        updateSession(trackedSessionID, reason: question.isEmpty ? "empty transcript" : "thinking") { session in
+        // M-C1：不开口超时触发的停止，转录仍为空时按收藏处理，intent 在本地定为 collect。
+        let collectsWithoutSpeech = question.isEmpty && trigger == .noSpeechCollect && currentScreenshotURL != nil
+        let localIntent: LLMIntent? = collectsWithoutSpeech ? .collect : nil
+        updateSession(
+            trackedSessionID,
+            reason: question.isEmpty ? (collectsWithoutSpeech ? "collect without speech" : "empty transcript") : "thinking"
+        ) { session in
             session.transcript = question
-            if question.isEmpty {
+            if question.isEmpty && !collectsWithoutSpeech {
                 session.markFailed(.noSpeech)
             } else {
                 session.statusValue = .thinking
@@ -395,7 +416,7 @@ final class SessionCoordinator {
         latestTranscriptTail = ""
         lastActivityPush = nil
 
-        guard !question.isEmpty else {
+        guard !question.isEmpty || collectsWithoutSpeech else {
             speculative?.cancel()
             screenTextTask?.cancel()
             jpegTask?.cancel()
@@ -408,7 +429,18 @@ final class SessionCoordinator {
 
         // 提前请求的问题和最终转录一致（忽略标点空格）就直接用它，否则取消、用最终转录重发。
         let run: QuickAnswerRun
-        if let speculative, speculative.normalizedQuestion == QuickAnswerRun.normalize(question) {
+        if collectsWithoutSpeech {
+            speculative?.cancel()
+            logger.info("collect without speech session=\(trackedSessionID.uuidString, privacy: .public)")
+            run = makeQuickAnswerRun(
+                sessionID: trackedSessionID,
+                question: "",
+                speculative: false,
+                intentHint: .collect,
+                jpegTask: jpegTask,
+                screenTextTask: screenTextTask
+            )
+        } else if let speculative, speculative.normalizedQuestion == QuickAnswerRun.normalize(question) {
             run = speculative
             timing.speculation = .hit
             timing.speculationLeadMs = Self.milliseconds(stopStartedAt - speculative.startedAt)
@@ -447,6 +479,7 @@ final class SessionCoordinator {
             await self?.runAnswer(
                 sessionID: trackedSessionID,
                 question: question,
+                localIntent: localIntent,
                 run: run,
                 stopStartedAt: stopStartedAt,
                 timing: timing,
@@ -607,9 +640,11 @@ final class SessionCoordinator {
 
     /// 说完之后的后台流程：thinking（摘要还没到时）→ 摘要一到就 answered + Alert → 等完整回答写 AskSession →
     /// 关音频会话 → 结束后台任务。请求本身在 run 里已经开始跑（可能是录音中提前发的）。
+    /// M-C1：localIntent 是本地已确定的意图（没说话 = collect）；最终意图 = localIntent ?? 模型返回的 intent ?? ask。
     private func runAnswer(
         sessionID: UUID,
         question: String,
+        localIntent: LLMIntent?,
         run: QuickAnswerRun,
         stopStartedAt: ContinuousClock.Instant,
         timing: SessionTiming,
@@ -630,21 +665,29 @@ final class SessionCoordinator {
                 transcriptTail: String(question.suffix(Self.maxTranscriptTailLength)),
                 summary: nil,
                 errorMessage: nil,
-                startedAt: currentState?.startedAt ?? .now
+                startedAt: currentState?.startedAt ?? .now,
+                kind: localIntent == .collect ? .collect : .ask
             )
             await updateCurrentActivity(thinkingState, alert: nil)
             logger.info(
-                "thinking session=\(sessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public)"
+                "thinking session=\(sessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public) localIntent=\(localIntent?.rawValue ?? "nil", privacy: .public)"
             )
         }
 
         // 采用这次请求：摘要到了（或已经到了）就推到灵动岛。
+        let canSwitchToAsk = !question.isEmpty
         run.summaryHandler = { [weak self, weak run] summary in
             guard let self, let run else { return }
-            run.summaryShowTask = Task { await self.showSummary(summary, sessionID: sessionID, run: run) }
+            let intent = localIntent ?? run.summaryIntent ?? .ask
+            run.summaryShowTask = Task {
+                await self.showSummary(summary, intent: intent, canSwitchToAsk: canSwitchToAsk, sessionID: sessionID, run: run)
+            }
         }
         if let summary = run.summary {
-            run.summaryShowTask = Task { await self.showSummary(summary, sessionID: sessionID, run: run) }
+            let intent = localIntent ?? run.summaryIntent ?? .ask
+            run.summaryShowTask = Task {
+                await self.showSummary(summary, intent: intent, canSwitchToAsk: canSwitchToAsk, sessionID: sessionID, run: run)
+            }
         }
 
         // 放弃回答 / 后台时间用完会取消 answerTask，这里连带取消请求。
@@ -671,34 +714,34 @@ final class SessionCoordinator {
         var finalActivityMs: Int?
         switch outcome {
         case .success(let answer):
-            updateSession(sessionID, reason: "answered") { session in
-                session.summary = answer.summary
-                session.answer = answer.answer
-                session.needsDeepAnswer = answer.needsDeep ?? true
-                session.clearFailure()
-                session.statusValue = .answered
-            }
+            let intent = localIntent ?? answer.intent ?? run.summaryIntent ?? .ask
+            applyQuickAnswer(answer, intent: intent, sessionID: sessionID, reason: "answered")
             logger.info(
-                "answered session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) summaryShownEarly=\(run.summaryShownAt != nil, privacy: .public)"
+                "answered session=\(sessionID.uuidString, privacy: .public) intent=\(intent.rawValue, privacy: .public) latencyMs=\(latencyMs, privacy: .public) summaryShownEarly=\(run.summaryShownAt != nil, privacy: .public)"
             )
-            // 兜底：流式里没提前拿到摘要（模型把 summary 放在后面等），现在补显示。
+            let finalState = answeredState(
+                summary: answer.summary,
+                intent: intent,
+                cardTitle: AppDatabase.fetchCard(id: sessionID)?.title,
+                canSwitchToAsk: canSwitchToAsk
+            )
             if run.summaryShownAt == nil {
+                // 兜底：流式里没提前拿到摘要（模型把 summary 放在后面等），现在补显示。
                 let activityStartedAt = clock.now
-                await updateCurrentActivity(answeredState(summary: answer.summary), alert: alert(body: answer.summary))
+                await updateCurrentActivity(finalState, alert: alert(body: answer.summary))
                 finalShownAt = clock.now
                 finalActivityMs = Self.milliseconds(clock.now - activityStartedAt)
+            } else if intent == .collect {
+                // 摘要先到时还没有卡片标题：完整结果到了再不带提示更新一次。
+                await updateCurrentActivity(finalState, alert: nil)
             }
         case .failure(let error):
             answerError = (error as? LLMError)?.logDescription ?? "\((error as NSError).domain) \((error as NSError).code)"
             if let summary = run.summary, run.summaryShownAt != nil {
-                // 摘要已经在灵动岛上了，完整回答没拿到：用摘要当回答，会话页再做深度回答。
-                updateSession(sessionID, reason: "answered degraded") { session in
-                    session.summary = summary
-                    session.answer = summary
-                    session.needsDeepAnswer = true
-                    session.clearFailure()
-                    session.statusValue = .answered
-                }
+                // 摘要已经在灵动岛上了，完整回答没拿到：用摘要当回答，会话页再做深度回答。卡片只有摘要。
+                let intent = localIntent ?? run.summaryIntent ?? .ask
+                let degraded = LLMAnswer(summary: summary, answer: summary, needsDeep: true, intent: intent)
+                applyQuickAnswer(degraded, intent: intent, sessionID: sessionID, reason: "answered degraded")
                 logger.notice(
                     "answer degraded to summary session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) error=\(answerError ?? "nil", privacy: .public)"
                 )
@@ -715,7 +758,8 @@ final class SessionCoordinator {
                     summary: nil,
                     errorMessage: failure.message,
                     startedAt: currentState?.startedAt ?? .now,
-                    errorHint: failure.islandHint
+                    errorHint: failure.islandHint,
+                    kind: localIntent == .collect ? .collect : .ask
                 )
                 logger.error(
                     "answer failed session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
@@ -763,31 +807,50 @@ final class SessionCoordinator {
     }
 
     /// 流式摘要一到：写进库（状态仍是 thinking，完整回答到了才转 answered），灵动岛切 answered 并展开提示。
-    private func showSummary(_ summary: String, sessionID: UUID, run: QuickAnswerRun) async {
+    /// M-C1：collect 时显示「已收藏」（卡片标题等完整结果到了再补），both 时「收藏」按钮直接显示为已收藏。
+    private func showSummary(
+        _ summary: String,
+        intent: LLMIntent,
+        canSwitchToAsk: Bool,
+        sessionID: UUID,
+        run: QuickAnswerRun
+    ) async {
         guard answeringSessionID == sessionID, run.summaryShownAt == nil else { return }
         updateSession(sessionID, reason: "summary ready") { $0.summary = summary }
         let activityStartedAt = clock.now
-        await updateCurrentActivity(answeredState(summary: summary), alert: alert(body: summary))
+        await updateCurrentActivity(
+            answeredState(summary: summary, intent: intent, cardTitle: nil, canSwitchToAsk: canSwitchToAsk),
+            alert: alert(body: intent == .collect ? "已收藏：\(summary)" : summary)
+        )
         run.summaryShownAt = clock.now
         run.activityUpdateMs = Self.milliseconds(clock.now - activityStartedAt)
         logger.info(
-            "summary shown session=\(sessionID.uuidString, privacy: .public) chars=\(summary.count, privacy: .public) llmSummaryMs=\(run.llmSummaryMs ?? -1, privacy: .public)"
+            "summary shown session=\(sessionID.uuidString, privacy: .public) intent=\(intent.rawValue, privacy: .public) chars=\(summary.count, privacy: .public) llmSummaryMs=\(run.llmSummaryMs ?? -1, privacy: .public)"
         )
     }
 
-    private func answeredState(summary: String) -> AskActivityAttributes.ContentState {
+    func answeredState(
+        summary: String,
+        intent: LLMIntent,
+        cardTitle: String?,
+        canSwitchToAsk: Bool
+    ) -> AskActivityAttributes.ContentState {
         AskActivityAttributes.ContentState(
             phase: .answered,
             transcriptTail: currentState?.transcriptTail ?? "",
             summary: summary,
             errorMessage: nil,
-            startedAt: currentState?.startedAt ?? .now
+            startedAt: currentState?.startedAt ?? .now,
+            kind: intent == .collect ? .collect : .ask,
+            cardTitle: intent == .collect ? cardTitle : nil,
+            isSaved: intent == .ask ? false : true,
+            canSwitchToAsk: intent == .collect ? canSwitchToAsk : nil
         )
     }
 
     // SPEC 第 4 节第 10 步：带 AlertConfiguration 更新 → 停用音频会话 → endBackgroundTask。
     // TODO: 核对官方文档：确认 App 在后台时带 AlertConfiguration 的 update 会让灵动岛自动展开（M1 的 failed 已用过，answered 需真机再确认）。
-    private func alert(body: String) -> AlertConfiguration {
+    func alert(body: String) -> AlertConfiguration {
         AlertConfiguration(
             title: "IslandAsk",
             body: LocalizedStringResource(stringLiteral: body),
@@ -958,40 +1021,40 @@ final class SessionCoordinator {
         AppDatabase.save(reason: "\(reason) session=\(id.uuidString)")
     }
 
-    /// 按设置页的保留天数删除旧会话（连同截图、录音）。App 回到前台、改保留天数时调用；进行中的会话由 deleteSession 跳过。
+    /// 按设置页的保留天数删除旧的未收藏卡片（连同会话、截图、录音）。收藏的卡片永不过期（M-C1）。
+    /// App 回到前台、改保留天数时调用；进行中的卡片由 deleteCards 跳过。
     func purgeExpiredSessions() {
         let days = AppSettings.historyRetentionDays
         guard days > 0 else { return }
         guard let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: .now) else { return }
-        let descriptor = FetchDescriptor<AskSession>(predicate: #Predicate { $0.createdAt < cutoff })
-        let expired: [AskSession]
+        let cardDescriptor = FetchDescriptor<Card>(predicate: #Predicate { $0.createdAt < cutoff })
+        let sessionDescriptor = FetchDescriptor<AskSession>(predicate: #Predicate { $0.createdAt < cutoff })
+        let expiredCardIDs: [UUID]
+        let orphanSessionIDs: [UUID]
         do {
-            expired = try AppDatabase.context.fetch(descriptor)
+            expiredCardIDs = try AppDatabase.context.fetch(cardDescriptor).filter { !$0.isSavedValue }.map(\.id)
+            // 补建卡片之前留下的、没有卡片的旧会话（正常情况下启动时已补建，这里只是兜底）。
+            orphanSessionIDs = try AppDatabase.context.fetch(sessionDescriptor).filter { $0.card == nil }.map(\.id)
         } catch {
             logger.error("purge failed: fetch error=\(error.localizedDescription, privacy: .public)")
             return
         }
-        guard !expired.isEmpty else { return }
-        let ids = expired.map(\.id)
-        logger.info("purging expired sessions count=\(ids.count, privacy: .public) retentionDays=\(days, privacy: .public)")
-        for id in ids {
-            deleteSession(id: id)
-        }
+        let ids = Set(expiredCardIDs + orphanSessionIDs)
+        guard !ids.isEmpty else { return }
+        logger.info(
+            "purging expired unsaved cards count=\(ids.count, privacy: .public) orphanSessions=\(orphanSessionIDs.count, privacy: .public) retentionDays=\(days, privacy: .public)"
+        )
+        deleteCards(ids: Array(ids))
     }
 
-    /// 历史列表左滑删除：删数据库记录（追问级联删除）和截图、录音文件。进行中的会话不允许删。
+    /// 旧入口：会话页的删除。卡片与会话同 id，统一按卡片删除（级联删除会话、截图、录音）。
     func deleteSession(id: UUID) {
-        guard currentSessionID != id, answeringSessionID != id, !inAppRequestSessionIDs.contains(id) else {
-            logger.notice("delete ignored: session in progress session=\(id.uuidString, privacy: .public)")
-            return
-        }
-        guard let session = AppDatabase.fetchSession(id: id) else {
-            logger.error("delete failed: session not found session=\(id.uuidString, privacy: .public)")
-            return
-        }
-        AppDatabase.context.delete(session)
-        AppDatabase.save(reason: "session deleted session=\(id.uuidString)")
-        ScreenshotStore.removeArtifacts(sessionID: id)
+        deleteCard(id: id)
+    }
+
+    /// 进行中的会话（录音、等回答、App 内请求）：不能删除，也不能被批量操作改动。
+    func isCardBusy(id: UUID) -> Bool {
+        currentSessionID == id || answeringSessionID == id || inAppRequestSessionIDs.contains(id)
     }
 
     nonisolated static func milliseconds(_ duration: Duration) -> Int {
