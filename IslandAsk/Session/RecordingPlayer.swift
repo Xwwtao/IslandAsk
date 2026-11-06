@@ -22,6 +22,8 @@ final class RecordingPlayer {
 
     private(set) var hasRecording = false
     private(set) var isPlaying = false
+    /// 当前这次播放的总时长（秒），会话页气泡按它做进度动画。
+    private(set) var duration: TimeInterval = 0
 
     private var url: URL?
     private var player: AVAudioPlayer?
@@ -56,6 +58,7 @@ final class RecordingPlayer {
                 return
             }
             self.player = player
+            duration = player.duration
             isPlaying = true
             audioLogger.info("playback started url=\(url.lastPathComponent, privacy: .public)")
 

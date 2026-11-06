@@ -54,7 +54,7 @@ struct SessionDetailView: View {
         .background(Theme.Colors.pageBackground)
         .navigationTitle(sessions.first.map { $0.createdAt.formatted(date: .abbreviated, time: .shortened) } ?? "会话")
         .navigationBarTitleDisplayMode(.inline)
-        .task {
+        .task(id: sessionID) {
             player.load(sessionID: sessionID)
             logger.info("session detail opened session=\(sessionID.uuidString, privacy: .public)")
         }
@@ -94,7 +94,7 @@ struct SessionDetailView: View {
                 VStack(alignment: .leading, spacing: Theme.Spacing.section) {
                     screenshotSection(session)
                         .staggeredAppear(0)
-                    QuestionBubble(text: session.transcript, date: session.createdAt)
+                    QuestionBubble(text: session.transcript, date: session.createdAt, player: player)
                         .staggeredAppear(1)
                     if session.statusValue == .answered, let summary = session.summary, !summary.isEmpty {
                         IslandSummaryCard(summary: summary)
@@ -102,6 +102,9 @@ struct SessionDetailView: View {
                     }
                     answerSection(session)
                         .staggeredAppear(3)
+                    if AppSettings.showsTiming, let timing = session.timing {
+                        TimingCard(timing: timing)
+                    }
                     followUpSection(session)
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }
@@ -131,20 +134,13 @@ struct SessionDetailView: View {
     @ViewBuilder
     private func screenshotSection(_ session: AskSession) -> some View {
         if let url = session.screenshotURL {
-            ScreenshotHero(url: url) {
+            ScreenshotHero(url: url, showsAccessories: session.ocrText?.isEmpty == false) {
                 openScreenshot(url: url, sessionID: session.id)
             } accessories: {
                 if session.ocrText?.isEmpty == false {
                     Button("识别到的文字", systemImage: "text.viewfinder") {
                         showsScreenText = true
                     }
-                }
-                if player.hasRecording {
-                    Button(action: player.toggle) {
-                        Label(player.isPlaying ? "停止" : "原始录音", systemImage: player.isPlaying ? "stop.fill" : "play.fill")
-                            .contentTransition(.symbolEffect(.replace))
-                    }
-                    .accessibilityLabel(player.isPlaying ? "停止播放录音" : "播放原始录音")
                 }
             }
         } else {
@@ -369,18 +365,22 @@ private extension Optional where Wrapped == FollowUpError {
 // MARK: - 子视图
 
 /// 右侧的问题气泡：带声波图标，表示这是语音问的。
+/// 右侧的蓝色问题气泡。有录音时左边是播放键；播放中整个气泡先变淡，再由实色从左往右铺满，当作进度条。
 private struct QuestionBubble: View {
 
     let text: String
     let date: Date
+    let player: RecordingPlayer
+
+    /// 已播放比例 0...1。开始播放时用一次线性动画从 0 走到 1（时长 = 录音时长），由 SwiftUI 插值，不逐帧重算 body。
+    @State private var playedFraction: CGFloat = 0
+    /// 播放键中心到文字基线的距离：让按钮和第一行中文的视觉中心对齐，随动态字号缩放。
+    @ScaledMetric(relativeTo: .body) private var iconBaselineOffset: CGFloat = 6
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Image(systemName: "waveform")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.8))
-                    .accessibilityHidden(true)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                leadingIcon
                 Text(text.isEmpty ? "（没有识别到文字）" : text)
                     .font(.body.weight(.medium))
                     .foregroundStyle(.white)
@@ -388,14 +388,58 @@ private struct QuestionBubble: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .background(Color.accentColor.gradient, in: BubbleShape(isUser: true))
+            .background {
+                ZStack {
+                    // 播放中底色变淡，作为进度条的「未播放」部分。
+                    BubbleShape(isUser: true)
+                        .fill(Color.accentColor.opacity(player.isPlaying ? 0.4 : 1))
+                    if player.isPlaying {
+                        Rectangle()
+                            .fill(Color.accentColor.gradient)
+                            // 缩放为 0 是奇异矩阵，留一点点。
+                            .scaleEffect(x: max(playedFraction, 0.001), y: 1, anchor: .leading)
+                            .clipShape(BubbleShape(isUser: true))
+                    }
+                }
+                .animation(.easeOut(duration: 0.2), value: player.isPlaying)
+            }
+            .onChange(of: player.isPlaying) { _, playing in
+                var reset = Transaction()
+                reset.disablesAnimations = true
+                withTransaction(reset) { playedFraction = 0 }
+                guard playing, player.duration > 0 else { return }
+                withAnimation(.linear(duration: player.duration)) { playedFraction = 1 }
+            }
             Text("语音提问 · \(date.formatted(date: .omitted, time: .shortened))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.leading, 40)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var leadingIcon: some View {
+        if player.hasRecording {
+            let baselineOffset = iconBaselineOffset
+            Button(action: player.toggle) {
+                Image(systemName: player.isPlaying ? "stop.fill" : "play.fill")
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 26, height: 26)
+                    .background(.white.opacity(0.22), in: .circle)
+                    .contentTransition(.symbolEffect(.replace))
+            }
+            .buttonStyle(.plain)
+            .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + baselineOffset }
+            .accessibilityLabel(player.isPlaying ? "停止播放录音" : "播放原始录音")
+        } else {
+            Image(systemName: "waveform")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.8))
+                .accessibilityHidden(true)
+        }
     }
 }
 
@@ -605,7 +649,7 @@ private struct LiveReplyView: View {
                 get: { userExpanded ?? reply.content.isEmpty },
                 set: { userExpanded = $0 }
             )) {
-                Text(reply.reasoning.isEmpty ? "等待模型开始思考…" : reply.reasoning)
+                Text(reasoningTail)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -625,10 +669,21 @@ private struct LiveReplyView: View {
                 }
             }
             if !reply.content.isEmpty {
-                MarkdownText(markdown: reply.content)
+                MarkdownText(markdown: reply.content, isStreaming: true)
             }
         }
     }
+
+    /// 流式中只显示思考过程的末尾：整段长文字每次追加都要全量重排，是滑动卡顿的来源之一。
+    /// 完成后由 ReasoningDisclosure 显示全文。
+    private var reasoningTail: String {
+        let reasoning = reply.reasoning
+        guard !reasoning.isEmpty else { return "等待模型开始思考…" }
+        guard reasoning.count > Self.reasoningTailLength else { return reasoning }
+        return "…" + reasoning.suffix(Self.reasoningTailLength)
+    }
+
+    private static let reasoningTailLength = 600
 }
 
 /// 已完成回答的思考过程，默认折叠。
@@ -656,6 +711,8 @@ private struct ReasoningDisclosure: View {
 private struct ScreenshotHero<Accessories: View>: View {
 
     let url: URL
+    /// 下面那排玻璃按钮没有内容时不显示，免得留一块空白。
+    var showsAccessories = true
     let onOpen: () -> Void
     @ViewBuilder var accessories: Accessories
 
@@ -709,12 +766,14 @@ private struct ScreenshotHero<Accessories: View>: View {
             .background(Theme.Colors.cardBackground)
             .clipShape(.rect(cornerRadius: Theme.Radius.card))
 
-            GlassEffectContainer(spacing: 8) {
-                HStack(spacing: 8) {
-                    accessories
+            if showsAccessories {
+                GlassEffectContainer(spacing: 8) {
+                    HStack(spacing: 8) {
+                        accessories
+                    }
+                    .font(.footnote.weight(.semibold))
+                    .buttonStyle(.glass)
                 }
-                .font(.footnote.weight(.semibold))
-                .buttonStyle(.glass)
             }
         }
         .task(id: url) {

@@ -37,13 +37,18 @@ struct AskAboutScreenIntent: AppIntent, AudioRecordingIntent, LiveActivityIntent
             category: "intent"
         )
         let sessionID = UUID()
+        let triggeredAt = ContinuousClock.now
         logger.info(
             "perform start session=\(sessionID.uuidString, privacy: .public) hasScreenshot=\(screenshot != nil, privacy: .public)"
         )
 
         do {
             let screenshotURL = try ScreenshotStore.save(screenshot, sessionID: sessionID)
-            try await SessionCoordinator.shared.start(sessionID: sessionID, screenshotURL: screenshotURL)
+            try await SessionCoordinator.shared.start(
+                sessionID: sessionID,
+                screenshotURL: screenshotURL,
+                triggeredAt: triggeredAt
+            )
             logger.info("perform succeeded session=\(sessionID.uuidString, privacy: .public)")
             return .result()
         } catch {

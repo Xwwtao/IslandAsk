@@ -13,6 +13,35 @@ import SwiftUI
 struct MarkdownText: View {
 
     let markdown: String
+    /// 流式中：按最后一个空行切成「稳定前缀 + 尾部」，前缀只在跨过新段落时才重新解析和排版；
+    /// 同时关掉文字选择（大量可选中 Text 的排版开销很大），流结束后再打开。
+    var isStreaming = false
+
+    var body: some View {
+        if isStreaming {
+            let split = MarkdownBlock.streamingSplit(markdown)
+            VStack(alignment: .leading, spacing: 8) {
+                if !split.stable.isEmpty {
+                    MarkdownBlocksView(markdown: split.stable)
+                        .equatable()
+                }
+                if !split.tail.isEmpty {
+                    MarkdownBlocksView(markdown: split.tail)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            MarkdownBlocksView(markdown: markdown)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .textSelection(.enabled)
+        }
+    }
+}
+
+/// 解析并渲染一段 Markdown。Equatable：内容没变时 SwiftUI 跳过 body，不重新解析。
+private struct MarkdownBlocksView: View, Equatable {
+
+    let markdown: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -20,8 +49,6 @@ struct MarkdownText: View {
                 blockView(block)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .textSelection(.enabled)
     }
 
     @ViewBuilder
@@ -66,7 +93,52 @@ struct MarkdownText: View {
     /// 行内语法；解析失败就原样显示。
     private static func inline(_ text: String) -> AttributedString {
         let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-        return (try? AttributedString(markdown: text, options: options)) ?? AttributedString(text)
+        guard let parsed = try? AttributedString(markdown: text, options: options) else {
+            return AttributedString(text)
+        }
+        return sanitizedLinks(parsed)
+    }
+
+    /// 回答来自大模型，截图里的文字可能诱导它输出钓鱼链接或唤起其他 App 的 URL Scheme：
+    /// 只保留 http/https 链接，其余去掉链接只留文字；链接文字里看不出真实域名时，在后面标出域名。
+    private static func sanitizedLinks(_ parsed: AttributedString) -> AttributedString {
+        var result = AttributedString()
+        var currentLink: URL?
+        var currentText = ""
+
+        func closeLink() {
+            defer {
+                currentLink = nil
+                currentText = ""
+            }
+            guard let host = currentLink?.host(), !currentText.localizedCaseInsensitiveContains(host) else { return }
+            var label = AttributedString("（\(host)）")
+            label.foregroundColor = Color.secondary
+            result.append(label)
+        }
+
+        for run in parsed.runs {
+            var piece = AttributedString(parsed[run.range])
+            var safeLink: URL?
+            if let url = run.link {
+                let scheme = url.scheme?.lowercased()
+                if (scheme == "https" || scheme == "http") && url.host() != nil {
+                    safeLink = url
+                } else {
+                    piece.link = nil
+                }
+            }
+            if safeLink != currentLink, currentLink != nil {
+                closeLink()
+            }
+            currentLink = safeLink
+            if safeLink != nil {
+                currentText += String(piece.characters)
+            }
+            result.append(piece)
+        }
+        closeLink()
+        return result
     }
 }
 
@@ -79,6 +151,26 @@ enum MarkdownBlock: Equatable {
     case quote(String)
     case code(String)
     case rule
+
+    /// 流式切分：在最后一个不处于代码块内的空行处切开。空行之前的块已经写完，之后不会再变。
+    static func streamingSplit(_ markdown: String) -> (stable: String, tail: String) {
+        var inFence = false
+        var lastSplit: String.Index?
+        var lineStart = markdown.startIndex
+        while lineStart < markdown.endIndex {
+            let lineEnd = markdown[lineStart...].firstIndex(of: "\n") ?? markdown.endIndex
+            let line = markdown[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("```") {
+                inFence.toggle()
+            } else if line.isEmpty, !inFence, lineEnd < markdown.endIndex {
+                lastSplit = markdown.index(after: lineEnd)
+            }
+            guard lineEnd < markdown.endIndex else { break }
+            lineStart = markdown.index(after: lineEnd)
+        }
+        guard let lastSplit else { return ("", markdown) }
+        return (String(markdown[..<lastSplit]), String(markdown[lastSplit...]))
+    }
 
     static func parse(_ markdown: String) -> [MarkdownBlock] {
         var blocks: [MarkdownBlock] = []

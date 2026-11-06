@@ -3,7 +3,7 @@
 //  IslandAsk
 //
 //  深度回答 / 追问的流式状态。只在内存里，结束后由 SessionCoordinator 把最终文字写进 SwiftData。
-//  片段先进缓冲，每 100ms 推一次给 UI，避免每个 token 都重新渲染 Markdown。
+//  片段先进缓冲，每 150ms 推一次给 UI，避免每个 token 都重新渲染 Markdown。
 //
 
 import Foundation
@@ -24,6 +24,11 @@ final class StreamingReply {
     private(set) var reasoning = ""
     private(set) var content = ""
 
+    /// 耗时记录（会话页耗时卡片）：第一个思考片段、第一个正文片段到达的时间。
+    @ObservationIgnored let startedInstant = ContinuousClock.now
+    @ObservationIgnored private(set) var firstReasoningAt: ContinuousClock.Instant?
+    @ObservationIgnored private(set) var firstContentAt: ContinuousClock.Instant?
+
     @ObservationIgnored private var pendingReasoning = ""
     @ObservationIgnored private var pendingContent = ""
     @ObservationIgnored private var flushTask: Task<Void, Never>?
@@ -35,13 +40,15 @@ final class StreamingReply {
     func append(_ event: LLMStreamEvent) {
         switch event {
         case .reasoning(let text):
+            if firstReasoningAt == nil { firstReasoningAt = .now }
             pendingReasoning += text
         case .content(let text):
+            if firstContentAt == nil { firstContentAt = .now }
             pendingContent += text
         }
         guard flushTask == nil else { return }
         flushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(150))
             self?.flush()
         }
     }

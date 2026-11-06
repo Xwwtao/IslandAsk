@@ -79,6 +79,37 @@ nonisolated enum TextRecognizer {
         return text
     }
 
+    /// 识别提示词上限：给太多会稀释效果，也拖慢设置。
+    static let maxContextualTerms = 100
+
+    /// 从 OCR 文字里挑识别提示词，按出现顺序去重：
+    /// - 英文 / 字母数字词（≥2 字符）：产品名、术语、代码符号，最容易被语音识别成同音中文；
+    /// - 2–8 字的短中文行：标题、人名、按钮文字。长句不拆（没有分词，整句做提示没有意义）。
+    static func contextualTerms(from text: String) -> [String] {
+        var terms: [String] = []
+        var seen = Set<String>()
+        func add(_ term: String) {
+            guard terms.count < maxContextualTerms, seen.insert(term.lowercased()).inserted else { return }
+            terms.append(term)
+        }
+        for rawLine in text.split(whereSeparator: \.isNewline) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            let isShortChineseLine = (2...8).contains(line.count)
+                && line.unicodeScalars.allSatisfy { $0.properties.isIdeographic }
+            if isShortChineseLine {
+                add(line)
+            }
+            for match in line.matches(of: /[A-Za-z][A-Za-z0-9.+#_\-]+/) {
+                let word = String(match.output).trimmingCharacters(in: CharacterSet(charactersIn: ".-_"))
+                if word.count >= 2 {
+                    add(word)
+                }
+            }
+            if terms.count >= maxContextualTerms { break }
+        }
+        return terms
+    }
+
     private static func milliseconds(_ duration: Duration) -> Int {
         let (seconds, attoseconds) = duration.components
         return Int(seconds) * 1000 + Int(attoseconds / 1_000_000_000_000_000)

@@ -31,6 +31,8 @@ nonisolated struct AskActivityAttributes: ActivityAttributes {
         /// M4：failed 态第二行的下一步提示；nil 时 widget 显示默认的「按操作按钮再试一次」。
         /// 可选且有默认值：旧版本推送的 state 解码不受影响，现有的 memberwise init 调用也不用改。
         var errorHint: String? = nil
+        /// M4：answered 态点过「复制」后为 true，按钮显示对勾。可选，理由同 errorHint。
+        var answerCopied: Bool? = nil
     }
 
     /// 会话 ID，与 App Group 容器 sessions/<sessionID>.png、<sessionID>.m4a 对应。

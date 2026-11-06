@@ -83,7 +83,7 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("开始使用 IslandAsk")
                     .font(.title2.bold())
-                Text("完成下面几步后，按下操作按钮就能在灵动岛里语音提问。进入 App 后记得在设置里填写 API Key。")
+                Text("完成下面几步后，按下操作按钮就能在灵动岛里语音提问。进入 App 后记得在设置里填写 API Key。提问时截图和问题会发送到你配置的大模型服务，其余数据只存在本机。")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

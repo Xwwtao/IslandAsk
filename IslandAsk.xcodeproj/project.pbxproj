@@ -13,6 +13,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		B610EFAE309A569E00C027BF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B6562F793097021B008E002D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B6562F803097021B008E002D;
+			remoteInfo = IslandAsk;
+		};
 		B6562FA330970288008E002D /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = B6562F793097021B008E002D /* Project object */;
@@ -35,6 +42,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		B610EFAA309A569E00C027BF /* IslandAskTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IslandAskTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B6562F813097021B008E002D /* IslandAsk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IslandAsk.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = IslandAskWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		B6562F9530970285008E002D /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
@@ -61,6 +69,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Shared/AskActivityAttributes.swift,
+				Shared/CopyAnswerIntent.swift,
 				Shared/DismissAskIntent.swift,
 				Shared/StopAskIntent.swift,
 			);
@@ -69,6 +78,11 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		B610EFAB309A569E00C027BF /* IslandAskTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = IslandAskTests;
+			sourceTree = "<group>";
+		};
 		B6562F833097021B008E002D /* IslandAsk */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
@@ -89,6 +103,11 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		B610EFA7309A569E00C027BF /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 		B6562F7E3097021B008E002D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
@@ -110,6 +129,7 @@
 				B6562FFC30978D05008E002D /* IslandAskWidgetExtension.entitlements */,
 				B6562F833097021B008E002D /* IslandAsk */,
 				B6562F9930970285008E002D /* IslandAskWidget */,
+				B610EFAB309A569E00C027BF /* IslandAskTests */,
 				B6562F9430970285008E002D /* Frameworks */,
 				B6562F823097021B008E002D /* Products */,
 			);
@@ -120,6 +140,7 @@
 			children = (
 				B6562F813097021B008E002D /* IslandAsk.app */,
 				B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */,
+				B610EFAA309A569E00C027BF /* IslandAskTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -136,6 +157,27 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		B610EFA9309A569E00C027BF /* IslandAskTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B610EFB2309A569E00C027BF /* Build configuration list for PBXNativeTarget "IslandAskTests" */;
+			buildPhases = (
+				B610EFA6309A569E00C027BF /* Sources */,
+				B610EFA7309A569E00C027BF /* Frameworks */,
+				B610EFA8309A569E00C027BF /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B610EFAF309A569E00C027BF /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				B610EFAB309A569E00C027BF /* IslandAskTests */,
+			);
+			name = IslandAskTests;
+			productName = IslandAskTests;
+			productReference = B610EFAA309A569E00C027BF /* IslandAskTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		B6562F803097021B008E002D /* IslandAsk */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = B6562F8C3097021C008E002D /* Build configuration list for PBXNativeTarget "IslandAsk" */;
@@ -186,6 +228,10 @@
 				LastSwiftUpdateCheck = 2700;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
+					B610EFA9309A569E00C027BF = {
+						CreatedOnToolsVersion = 27.0;
+						TestTargetID = B6562F803097021B008E002D;
+					};
 					B6562F803097021B008E002D = {
 						CreatedOnToolsVersion = 27.0;
 					};
@@ -210,11 +256,17 @@
 			targets = (
 				B6562F803097021B008E002D /* IslandAsk */,
 				B6562F9230970285008E002D /* IslandAskWidgetExtension */,
+				B610EFA9309A569E00C027BF /* IslandAskTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		B610EFA8309A569E00C027BF /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
 		B6562F7F3097021B008E002D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
@@ -228,6 +280,11 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		B610EFA6309A569E00C027BF /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 		B6562F7D3097021B008E002D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
@@ -241,6 +298,11 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		B610EFAF309A569E00C027BF /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B6562F803097021B008E002D /* IslandAsk */;
+			targetProxy = B610EFAE309A569E00C027BF /* PBXContainerItemProxy */;
+		};
 		B6562FA430970288008E002D /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = B6562F9230970285008E002D /* IslandAskWidgetExtension */;
@@ -249,6 +311,50 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		B610EFB0309A569E00C027BF /* Debug configuration for PBXNativeTarget "IslandAskTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6GDQDX75Z3;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wentao.IslandAskTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IslandAsk.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/IslandAsk";
+			};
+			name = Debug;
+		};
+		B610EFB1309A569E00C027BF /* Release configuration for PBXNativeTarget "IslandAskTests" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6GDQDX75Z3;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wentao.IslandAskTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				STRING_CATALOG_GENERATE_SYMBOLS = NO;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/IslandAsk.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/IslandAsk";
+			};
+			name = Release;
+		};
 		B6562F8A3097021C008E002D /* Debug configuration for PBXProject "IslandAsk" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -524,6 +630,14 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		B610EFB2309A569E00C027BF /* Build configuration list for PBXNativeTarget "IslandAskTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B610EFB0309A569E00C027BF /* Debug configuration for PBXNativeTarget "IslandAskTests" */,
+				B610EFB1309A569E00C027BF /* Release configuration for PBXNativeTarget "IslandAskTests" */,
+			);
+			defaultConfigurationName = Release;
+		};
 		B6562F7C3097021B008E002D /* Build configuration list for PBXProject "IslandAsk" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

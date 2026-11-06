@@ -43,6 +43,13 @@ struct SettingsView: View {
     @State private var downloadProgress = 0.0
     @State private var languageError: String?
 
+    // 历史记录
+    @State private var retentionDays = AppSettings.historyRetentionDays
+    @State private var storageBytes: Int64?
+
+    // 诊断
+    @State private var showsTiming = AppSettings.showsTiming
+
     // 状态
     @State private var microphoneGranted = false
     @State private var speechRecognitionGranted = false
@@ -54,6 +61,8 @@ struct SettingsView: View {
             statusSection
             llmSection
             languageSection
+            historySection
+            privacySection
             shortcutSection
             diagnosticsSection
         }
@@ -64,6 +73,7 @@ struct SettingsView: View {
             apiKey = stored
             savedAPIKey = stored
             await refreshStatus()
+            storageBytes = await ScreenshotStore.sessionsDirectoryByteCount()
         }
         .onChange(of: scenePhase) { _, newPhase in
             guard newPhase == .active else { return }
@@ -353,6 +363,57 @@ struct SettingsView: View {
         Task { speechModelStatus = await SpeechModelManager.status() }
     }
 
+    // MARK: - 历史记录
+
+    private var historySection: some View {
+        Section {
+            Picker(selection: $retentionDays) {
+                ForEach(AppSettings.historyRetentionOptions, id: \.self) { days in
+                    Text(days == 0 ? "永久" : "\(days) 天").tag(days)
+                }
+            } label: {
+                SettingsLabel("保留时长", systemName: "clock.arrow.circlepath", color: .brown)
+            }
+            .onChange(of: retentionDays) { _, value in
+                AppSettings.historyRetentionDays = value
+                logger.info("settings: history retention changed days=\(value, privacy: .public)")
+                SessionCoordinator.shared.purgeExpiredSessions()
+                Task { storageBytes = await ScreenshotStore.sessionsDirectoryByteCount() }
+            }
+            LabeledContent {
+                Text(storageBytes.map { $0.formatted(.byteCount(style: .file)) } ?? "—")
+                    .monospacedDigit()
+            } label: {
+                SettingsLabel("截图与录音占用", systemName: "internaldrive", color: .gray)
+            }
+        } header: {
+            Text("历史记录")
+        } footer: {
+            Text("超过保留时长的会话，连同截图和录音，会在打开 App 时自动删除。")
+        }
+    }
+
+    // MARK: - 数据去向
+
+    private var privacySection: some View {
+        Section {
+            LabeledContent {
+                Text(llmHost)
+                    .foregroundStyle(.secondary)
+            } label: {
+                SettingsLabel("发送到", systemName: "paperplane.fill", color: .blue)
+            }
+        } header: {
+            Text("数据去向")
+        } footer: {
+            Text("每次提问时，截图、语音转出的问题文字，以及（开启文字识别增强时）截图里识别出的文字，会发送到上面的大模型服务。截图、录音和历史记录只保存在本机；语音转文字优先在本机完成，设备不支持本机识别时会用 Apple 的联网识别。")
+        }
+    }
+
+    private var llmHost: String {
+        URL(string: baseURL)?.host() ?? "未配置"
+    }
+
     // MARK: - 快捷指令
 
     private var shortcutSection: some View {
@@ -383,6 +444,8 @@ struct SettingsView: View {
                 diagnosticRow("App Group", ok: AppGroup.isContainerAvailable, okText: "已配置", badText: "未配置")
                 LabeledContent("识别语言", value: AppSettings.recognitionLanguage.displayName)
                 LabeledContent("模型", value: AppSettings.model)
+                Toggle("会话页显示耗时", isOn: $showsTiming)
+                    .onChange(of: showsTiming) { _, value in AppSettings.showsTiming = value }
             }
             .font(.subheadline)
         } footer: {

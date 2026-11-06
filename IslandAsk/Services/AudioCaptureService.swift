@@ -37,6 +37,15 @@ final class AudioCaptureService {
     private var audioFile: AVAudioFile?
     private var tapInstalled = false
     private var isRunning = false
+    /// 已写进 m4a 的帧数（音频线程累加）和文件采样率：换算成「录音文件里的第几秒」，用来截掉末尾静音。
+    private let writtenFrames = OSAllocatedUnfairLock<Int64>(initialState: 0)
+    private var fileSampleRate: Double = 0
+
+    /// 当前已写进录音文件的时长（秒）。和文件时间轴一一对应，不受起录耗时影响。
+    var recordedSeconds: Double {
+        guard fileSampleRate > 0 else { return 0 }
+        return Double(writtenFrames.withLock { $0 }) / fileSampleRate
+    }
 
     /// 采集是否真的在跑（供调度器识别「会话还在但采集已经停了」的异常态）。
     var isCapturing: Bool {
@@ -116,6 +125,8 @@ final class AudioCaptureService {
             ]
             let file = try AVAudioFile(forWriting: fileURL, settings: fileSettings)
             audioFile = file
+            writtenFrames.withLock { $0 = 0 }
+            fileSampleRate = inputFormat.sampleRate
             try installTap(format: inputFormat, file: file, consumers: consumers)
             try await startEngineRetrying(file: file, consumers: consumers)
             isRunning = true
@@ -159,7 +170,7 @@ final class AudioCaptureService {
             onBus: 0,
             bufferSize: 1024,
             format: format,
-            block: Self.makeTapBlock(file: file, consumers: consumers)
+            block: Self.makeTapBlock(file: file, writtenFrames: writtenFrames, consumers: consumers)
         )
         tapInstalled = true
         logger.info(
@@ -172,6 +183,7 @@ final class AudioCaptureService {
     /// Swift 6 运行时会命中 swift_task_isCurrentExecutor -> dispatch_assert_queue_fail 直接崩溃。
     private nonisolated static func makeTapBlock(
         file: AVAudioFile,
+        writtenFrames: OSAllocatedUnfairLock<Int64>,
         consumers: [any AudioBufferConsumer]
     ) -> @Sendable (AVAudioPCMBuffer, AVAudioTime) -> Void {
         // 音频回调线程里不碰 actor 状态，只用局部常量；写失败时打日志，避免静默丢数据。
@@ -193,6 +205,8 @@ final class AudioCaptureService {
             }
             do {
                 try file.write(from: buffer)
+                let frames = Int64(buffer.frameLength)
+                writtenFrames.withLock { $0 += frames }
             } catch {
                 writeLogger.error("audio buffer write failed: \(error.localizedDescription, privacy: .public)")
             }

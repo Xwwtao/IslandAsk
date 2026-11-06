@@ -42,6 +42,27 @@ nonisolated enum ScreenshotStore {
         try? AppGroup.containerURL().appendingPathComponent(path)
     }
 
+    /// 设置页显示用：sessions 目录（截图 + 录音）在磁盘上的占用字节数。读不到返回 nil。
+    @concurrent
+    static func sessionsDirectoryByteCount() async -> Int64? {
+        guard let directory = try? sessionsDirectory() else { return nil }
+        return allocatedByteCount(in: directory)
+    }
+
+    /// FileManager.DirectoryEnumerator 不能在 async 上下文里迭代，单独放一个同步函数。
+    private static func allocatedByteCount(in directory: URL) -> Int64? {
+        guard let enumerator = FileManager.default.enumerator(
+                  at: directory,
+                  includingPropertiesForKeys: [.totalFileAllocatedSizeKey]
+              ) else { return nil }
+        var total: Int64 = 0
+        for case let url as URL in enumerator {
+            let size = (try? url.resourceValues(forKeys: [.totalFileAllocatedSizeKey]))?.totalFileAllocatedSize ?? 0
+            total += Int64(size)
+        }
+        return total
+    }
+
     /// 删除会话时一并删除截图和录音（历史列表左滑删除）。
     static func removeArtifacts(sessionID: UUID) {
         let logger = makeLogger()
@@ -104,7 +125,7 @@ nonisolated enum ScreenshotStore {
         return url
     }
 
-    /// 发给大模型前的压缩（SPEC 第 6.8 节）：长边缩到 1536 px（小图不放大），转 JPEG（质量 0.75）。
+    /// 发给大模型前的压缩（SPEC 第 6.8 节；M4 耗时优化把长边从 1536 降到 1280，减少图片 token）：长边缩到 1280 px（小图不放大），转 JPEG（质量 0.75）。
     /// 用 ImageIO 直接按目标尺寸解码，不把整张原图解成 UIImage，省内存；调用方应在主线程之外执行。
     static func jpegForUpload(url: URL, sessionID: UUID) throws -> Data {
         let logger = makeLogger()
@@ -158,7 +179,7 @@ nonisolated enum ScreenshotStore {
         return UIImage(cgImage: image)
     }
 
-    private static let uploadMaxPixelSize = 1536
+    private static let uploadMaxPixelSize = 1280
     private static let uploadJPEGQuality = 0.75
 
     /// 检查 PNG 文件头，能透写就透写。

@@ -254,6 +254,35 @@ nonisolated final class TranscriptionService: AudioBufferConsumer, @unchecked Se
         }
     }
 
+    // MARK: - 识别提示词
+
+    /// 截图 OCR 里的专有名词、英文词作为识别提示，让屏幕上出现的词更容易被识别对。
+    /// OCR 一般在开口后不久才完成，所以是在分析进行中设置。失败只记日志，不影响转录。
+    func updateContext(terms: [String]) async {
+        guard !terms.isEmpty else { return }
+        let logger = Self.makeLogger()
+        if let analyzer {
+            // setContext 签名已对照 iPhoneOS SDK 的 Speech.swiftinterface 核对。
+            // TODO: 核对官方文档：SpeechTranscriber 是否使用 contextualStrings、分析中途设置是否对后续音频生效，需真机对比识别结果。
+            let context = AnalysisContext()
+            context.contextualStrings[.general] = terms
+            do {
+                try await Task.detached {
+                    try await analyzer.setContext(context)
+                }.value
+                logger.info("analyzer context set terms=\(terms.count, privacy: .public)")
+            } catch {
+                logger.error("analyzer context set failed: \(error.localizedDescription, privacy: .public)")
+            }
+        } else if let sfRequest {
+            // TODO: 核对官方文档：recognitionTask 启动后再改 contextualStrings 是否生效。
+            sfRequest.contextualStrings = terms
+            logger.info("sf speech contextual strings set terms=\(terms.count, privacy: .public)")
+        } else {
+            logger.notice("context skipped: no active engine")
+        }
+    }
+
     // MARK: - 音频线程入口
 
     /// AudioCaptureService 的 tap 在音频线程同步调用。buffer 只在本次回调内有效，

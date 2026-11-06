@@ -97,13 +97,30 @@ struct AskLiveActivity: Widget {
             .accessibilityLabel("停止")
         case .thinking:
             loadingIndicator
-        case .answered, .failed:
-            Button(intent: DismissAskIntent(sessionID: context.attributes.sessionID)) {
-                circleButtonLabel(systemName: "xmark", tint: Color.white.opacity(0.25))
+        case .answered:
+            HStack(spacing: 8) {
+                let copied = context.state.answerCopied == true
+                Button(intent: CopyAnswerIntent(sessionID: context.attributes.sessionID)) {
+                    circleButtonLabel(
+                        systemName: copied ? "checkmark" : "doc.on.doc",
+                        tint: copied ? .green : Color.white.opacity(0.25)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(copied ? "已复制" : "复制回答")
+                dismissButton(context: context)
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("关闭")
+        case .failed:
+            dismissButton(context: context)
         }
+    }
+
+    private func dismissButton(context: ActivityViewContext<AskActivityAttributes>) -> some View {
+        Button(intent: DismissAskIntent(sessionID: context.attributes.sessionID)) {
+            circleButtonLabel(systemName: "xmark", tint: Color.white.opacity(0.25))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("关闭")
     }
 
     /// 正文：灵动岛 bottom 区域和锁屏共用，宽度占满。

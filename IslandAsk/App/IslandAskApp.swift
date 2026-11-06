@@ -111,5 +111,6 @@ struct IslandAskApp: App {
         // 先检查异常态，再补一次残留清理（answered / failed 的灵动岛在打开 App 时结束，SPEC 6.10）。
         await coordinator.recoverUnexpectedStoppedSessionIfNeeded()
         await coordinator.endOrphanActivitiesIfNeeded()
+        coordinator.purgeExpiredSessions()
     }
 }

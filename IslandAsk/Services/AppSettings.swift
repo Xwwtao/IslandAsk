@@ -2,7 +2,7 @@
 //  AppSettings.swift
 //  IslandAsk
 //
-//  设置页的持久化（SPEC 第 6.12 节）：API 地址、模型名、截图文字识别开关、识别语言存 UserDefaults；
+//  设置页的持久化（SPEC 第 6.12 节）：API 地址、模型名、截图文字识别开关、识别语言、历史保留天数存 UserDefaults；
 //  API Key 不在这里，存 Keychain（KeychainStore）。
 //  各模块在每次会话开始时读一次快照，设置改完下一次提问生效。
 //
@@ -42,6 +42,13 @@ nonisolated enum AppSettings {
         static let transcriptStableSeconds: Double = 1.5
         static let noSpeechTimeoutSeconds: Double = 6
         static let maxRecordingSeconds: Double = 60
+        /// 转录稳定多久就提前发快速档请求（说完判定仍是 transcriptStableSeconds）。
+        static let speculativeStableSeconds: Double = 0.8
+        /// 提前发请求还要求音量相对安静这么久（避免说话中途误发），见 speculativeRelativeDropDB。
+        static let speculativeQuietSeconds: Double = 0.5
+        /// 提前发请求的「安静」：比说话时的平滑音量低这么多 dB。
+        /// 真机：说话 -25～-29 dB、环境 -41～-44 dB，只差 15–18 dB；15 dB 时卡在边上常发不出来，改为 12 dB。
+        static let speculativeRelativeDropDB: Double = 12
     }
 
     // MARK: - Keys
@@ -51,6 +58,8 @@ nonisolated enum AppSettings {
         static let model = "llm.model"
         static let recognitionLanguage = "speech.recognitionLanguage"
         static let screenTextRecognition = "llm.screenTextRecognition"
+        static let historyRetentionDays = "history.retentionDays"
+        static let showsTiming = "debug.showsTiming"
     }
 
     private static var defaults: UserDefaults { .standard }
@@ -71,6 +80,25 @@ nonisolated enum AppSettings {
     static var screenTextRecognitionEnabled: Bool {
         get { defaults.object(forKey: Key.screenTextRecognition) == nil ? true : defaults.bool(forKey: Key.screenTextRecognition) }
         set { defaults.set(newValue, forKey: Key.screenTextRecognition) }
+    }
+
+    // MARK: - 历史记录
+
+    /// 设置页可选的保留天数；0 = 永久保留（默认）。
+    static let historyRetentionOptions = [0, 7, 30, 90]
+
+    /// M4：超过这么多天的会话（连同截图、录音）在 App 回到前台时自动删除。
+    static var historyRetentionDays: Int {
+        get { defaults.integer(forKey: Key.historyRetentionDays) }
+        set { defaults.set(newValue, forKey: Key.historyRetentionDays) }
+    }
+
+    // MARK: - 调试
+
+    /// M4：会话页显示各环节耗时卡片，默认开。
+    static var showsTiming: Bool {
+        get { defaults.object(forKey: Key.showsTiming) == nil ? true : defaults.bool(forKey: Key.showsTiming) }
+        set { defaults.set(newValue, forKey: Key.showsTiming) }
     }
 
     // MARK: - 识别语言

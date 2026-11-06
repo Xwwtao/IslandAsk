@@ -64,7 +64,10 @@ struct HistoryView: View {
             .navigationDestination(for: AppRoute.self) { route in
                 switch route {
                 case .session(let id):
+                    // 点灵动岛会把路径直接换成另一个会话：同一位置的页面会被沿用，@State（录音播放器、
+                    // 输入框、自动深度回答标记）跟着串到新会话。按会话 ID 区分身份，换会话就整页重建。
                     SessionDetailView(sessionID: id)
+                        .id(id)
                 case .settings:
                     SettingsView()
                 }

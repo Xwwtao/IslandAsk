@@ -120,28 +120,54 @@ struct ThinkingGlow: ViewModifier {
     let isActive: Bool
     var cornerRadius: CGFloat = Theme.Radius.card
 
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
     func body(content: Content) -> some View {
         content.overlay {
             if isActive {
-                TimelineView(.animation(paused: reduceMotion)) { timeline in
-                    let angle = reduceMotion
-                        ? 0
-                        : timeline.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 4) / 4 * 360
-                    RoundedRectangle(cornerRadius: cornerRadius)
-                        .strokeBorder(
-                            AngularGradient(
-                                colors: [.cyan, .blue, .purple, .pink, .orange, .cyan],
-                                center: .center,
-                                angle: .degrees(angle)
-                            ),
-                            lineWidth: 2
-                        )
-                        .blur(radius: 0.5)
-                }
-                .allowsHitTesting(false)
-                .transition(.opacity)
+                GlowBorder(cornerRadius: cornerRadius)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+    }
+}
+
+/// 旋转的是一张固定大小的渐变（只改 transform），描边形状只做 mask：
+/// 不再每帧重建 body、重画描边和模糊。之前用 TimelineView 每帧重算带 blur 的描边，
+/// 卡片随流式文字变高后，滑动会明显卡顿。
+private struct GlowBorder: View {
+    let cornerRadius: CGFloat
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isSpinning = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            // 边长取对角线，旋转到任何角度都能盖住整张卡片。
+            let side = hypot(proxy.size.width, proxy.size.height)
+            AngularGradient(
+                colors: [.cyan, .blue, .purple, .pink, .orange, .cyan],
+                center: .center
+            )
+            .frame(width: side, height: side)
+            .rotationEffect(.degrees(isSpinning ? 360 : 0))
+            .position(x: proxy.size.width / 2, y: proxy.size.height / 2)
+        }
+        .mask {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(lineWidth: 2)
+        }
+        .onAppear(perform: updateSpin)
+        .onChange(of: reduceMotion, updateSpin)
+    }
+
+    private func updateSpin() {
+        if reduceMotion {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { isSpinning = false }
+        } else {
+            withAnimation(.linear(duration: 4).repeatForever(autoreverses: false)) {
+                isSpinning = true
             }
         }
     }

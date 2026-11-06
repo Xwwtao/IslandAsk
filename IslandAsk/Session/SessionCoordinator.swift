@@ -15,7 +15,10 @@
 //  - M3：每次状态转换同步写 AskSession（SPEC 第 6.4 节）；App 内追问 askFollowUp、失败重问 retryAnswer
 //    只在前台使用，不碰灵动岛。大模型配置每次请求从设置页读取。
 //  - M4：失败文案统一走 UserFacingFailure（灵动岛短原因 + errorHint，会话页补充说明 + 操作）；
-//    起录前检查实时活动和麦克风/语音识别权限；录音期间并行跑 Vision 文字识别，问大模型前最多再等 1.5 秒。
+//    起录前检查实时活动和麦克风/语音识别权限；录音期间并行跑 Vision 文字识别和截图压缩，问大模型前最多再等 OCR 1.5 秒。
+//  - M4 耗时优化：快速档流式，摘要一到就显示；转录稳定 0.8 秒先发请求（SessionCoordinator+QuickAnswer.swift）。
+//  - 文件拆分：本文件是会话主流程；Live Activity 推送与清理在 SessionCoordinator+LiveActivity.swift，
+//    App 内深度回答 / 追问 / 重问在 SessionCoordinator+InApp.swift。
 //
 
 import AVFAudio
@@ -41,39 +44,54 @@ final class SessionCoordinator {
     static let shared = SessionCoordinator()
 
     /// 灵动岛/锁屏里显示的转录末尾字数（UI 优化后展开态显示最新约 80 字，留余量取 100；SPEC 6.10 原为 60 字）。
-    private static let maxTranscriptTailLength = 100
+    static let maxTranscriptTailLength = 100
     /// 说完后最多再等 OCR 多久（SPEC 第 2 节：后台保活约 30 秒，快速档本身 30 秒超时，不能多占）。
     private static let screenTextWaitLimit: Duration = .milliseconds(1500)
 
-    private let audioCapture = AudioCaptureService()
-    private let clock = ContinuousClock()
+    // 下面这些状态不标 private：SessionCoordinator+LiveActivity.swift / +InApp.swift 两个扩展文件要用。
+    // 只应在 SessionCoordinator 及其扩展里读写。
+    let audioCapture = AudioCaptureService()
+    let clock = ContinuousClock()
 
-    private var currentActivityID: String?
-    private var currentState: AskActivityAttributes.ContentState?
-    private var currentSessionID: UUID?
+    var currentActivityID: String?
+    var currentState: AskActivityAttributes.ContentState?
+    var currentSessionID: UUID?
     private var currentScreenshotURL: URL?
-    /// M4：录音期间并行跑的截图文字识别；stopListening 交给 runAnswer 等结果。
-    private var screenTextTask: Task<String?, Never>?
-    private var transcription: TranscriptionService?
+    /// M4：录音期间并行跑的截图文字识别；快速档请求（含提前请求）等它的结果。
+    var screenTextTask: Task<String?, Never>?
+    /// M4：录音期间就开始压缩截图，说完后不用再等 JPEG 编码。
+    var screenshotJPEGTask: Task<Data?, Never>?
+    /// M4：录音中提前发的快速档请求（见 SessionCoordinator+QuickAnswer.swift）。
+    var speculativeRun: QuickAnswerRun?
+    var speculativeRequestCount = 0
+    var transcription: TranscriptionService?
     /// 静音检测需要拿到转录文字（以转录为主判断说完/没说话，SPEC 第 6.7 节）。
-    private var silenceDetector: SilenceDetector?
+    var silenceDetector: SilenceDetector?
 
     /// 已停止录音、正在等大模型回答的会话（thinking 阶段）。
-    private var answeringSessionID: UUID?
+    var answeringSessionID: UUID?
     private var answerTask: Task<Void, Never>?
     private var answerBackgroundTaskID: UIBackgroundTaskIdentifier = .invalid
 
     /// App 内正在追问或重问的会话：同一会话同时只允许一个请求。
-    private var inAppRequestSessionIDs: Set<UUID> = []
+    var inAppRequestSessionIDs: Set<UUID> = []
 
-    private var isStartingSession = false
-    private var isStopping = false
+    var isStartingSession = false
+    var isStopping = false
 
-    private var transcriptUpdateTask: Task<Void, Never>?
-    private var pendingActivityPushTask: Task<Void, Never>?
-    private var lastActivityPush: ContinuousClock.Instant?
-    private var latestTranscriptTail = ""
-    private var didLogFirstTranscriptUpdate = false
+    var transcriptUpdateTask: Task<Void, Never>?
+    var pendingActivityPushTask: Task<Void, Never>?
+    var lastActivityPush: ContinuousClock.Instant?
+    var latestTranscriptTail = ""
+    var didLogFirstTranscriptUpdate = false
+
+    // 耗时采集（SessionTiming）：录音开始时间、最后一次转录文字变化的时间和文字、本次会话已采到的耗时。
+    var listeningStartedAt: ContinuousClock.Instant?
+    var lastTranscriptChangeAt: ContinuousClock.Instant?
+    var lastTranscriptText = ""
+    var pendingTiming = SessionTiming()
+    /// 最后一次转录文字变化时已写进录音文件的时长：截掉录音末尾静音的依据。
+    var lastSpeechAudioSeconds: Double?
 
     private init() {}
 
@@ -86,13 +104,16 @@ final class SessionCoordinator {
 
     /// 按 SPEC 第 4 节第 5 步的顺序：
     /// 结束上一个 Live Activity → 启动新 Live Activity（phase = listening）→ 启动转录 → 激活音频会话并开始录音。
-    func start(sessionID: UUID, screenshotURL: URL?) async throws {
+    /// triggeredAt：Intent perform 开始的时间，用来算「按键到开始听」。
+    func start(sessionID: UUID, screenshotURL: URL?, triggeredAt: ContinuousClock.Instant = .now) async throws {
         guard !isStartingSession else {
             logger.error("start ignored: another session is starting session=\(sessionID.uuidString, privacy: .public)")
             return
         }
         isStartingSession = true
         defer { isStartingSession = false }
+        // 「按键到开始听」分段计时（SessionTiming.screenshotSaveMs 等）。
+        let startCalledAt = clock.now
 
         // 同一时间只允许一个会话：新会话开始前先把上一个收干净（SPEC 第 6.4 节）。
         // 上一个还在等回答：直接放弃，结果不再更新灵动岛；音频会话马上会被新会话重新激活，这里不关。
@@ -110,6 +131,7 @@ final class SessionCoordinator {
             "start session=\(sessionID.uuidString, privacy: .public) hasScreenshot=\(screenshotURL != nil, privacy: .public)"
         )
         await endAllActivities(reason: "before new session")
+        let previousEndedAt = clock.now
 
         // 实时活动被关闭时 Activity.request 只会抛一个看不懂的错误，提前给快捷指令一句能照着做的话。
         guard PermissionManager.areLiveActivitiesEnabled else {
@@ -142,6 +164,7 @@ final class SessionCoordinator {
             )
             throw SessionCoordinatorError.liveActivityStartFailed
         }
+        let activityRequestedAt = clock.now
 
         // Intent 里不能弹授权框（SPEC 第 2 节）。没授权时音频/转录会报底层错误码，
         // 这里先在灵动岛上说清楚原因，再给快捷指令抛一句人话。
@@ -169,13 +192,20 @@ final class SessionCoordinator {
             await endAllActivities(reason: "transcription start failed")
             throw SessionCoordinatorError.transcriptionStartFailed
         }
+        let transcriptionPreparedAt = clock.now
 
         // 静音检测只负责发事件；结束动作统一回调度器，和停止按钮同一条路径。
         let detector = SilenceDetector { event in
             switch event {
-            case .finishedSpeaking, .maxDurationReached:
+            case .transcriptSettled(let text):
+                SessionCoordinator.shared.speculate(sessionID: sessionID, text: text)
+            case .finishedSpeaking:
                 Task {
-                    await SessionCoordinator.shared.stopListening(sessionID: sessionID.uuidString)
+                    await SessionCoordinator.shared.stopListening(sessionID: sessionID.uuidString, trigger: .silence)
+                }
+            case .maxDurationReached:
+                Task {
+                    await SessionCoordinator.shared.stopListening(sessionID: sessionID.uuidString, trigger: .maxDuration)
                 }
             case .noSpeechTimeout:
                 Task {
@@ -200,6 +230,7 @@ final class SessionCoordinator {
             await endAllActivities(reason: "audio start failed")
             throw SessionCoordinatorError.audioStartFailed
         }
+        let audioStartedAt = clock.now
 
         // 音频已在跑，现在才真正启动转录分析；失败要把已经开始的录音和 activity 收干净。
         do {
@@ -231,8 +262,30 @@ final class SessionCoordinator {
         latestTranscriptTail = ""
         lastActivityPush = nil
         didLogFirstTranscriptUpdate = false
+        let listeningAt = clock.now
+        listeningStartedAt = listeningAt
+        lastTranscriptChangeAt = nil
+        lastSpeechAudioSeconds = nil
+        lastTranscriptText = ""
+        var timing = SessionTiming(pressToListeningMs: SessionTiming.milliseconds(listeningAt - triggeredAt))
+        timing.screenshotSaveMs = SessionTiming.milliseconds(startCalledAt - triggeredAt)
+        timing.startEndPreviousMs = SessionTiming.milliseconds(previousEndedAt - startCalledAt)
+        timing.startActivityRequestMs = SessionTiming.milliseconds(activityRequestedAt - previousEndedAt)
+        timing.startTranscriptionPrepareMs = SessionTiming.milliseconds(transcriptionPreparedAt - activityRequestedAt)
+        timing.startAudioMs = SessionTiming.milliseconds(audioStartedAt - transcriptionPreparedAt)
+        timing.startTranscriptionActivateMs = SessionTiming.milliseconds(listeningAt - audioStartedAt)
+        pendingTiming = timing
+        logger.info(
+            "start steps session=\(sessionID.uuidString, privacy: .public) \(timing.logLine, privacy: .public)"
+        )
+        speculativeRun = nil
+        speculativeRequestCount = 0
         startTranscriptUpdates()
         startScreenTextRecognition(sessionID: sessionID, screenshotURL: screenshotURL)
+        screenshotJPEGTask = screenshotURL.map { url in
+            Task { await Self.uploadJPEGIfPossible(url: url, sessionID: sessionID) }
+        }
+        Task { await OpenAICompatibleProvider.preconnect() }
         logger.info("start succeeded session=\(sessionID.uuidString, privacy: .public)")
     }
 
@@ -241,7 +294,8 @@ final class SessionCoordinator {
     /// 灵动岛「停止」按钮、静音检测（说完/超 60 秒）都走这里。
     /// 故意不依赖 currentSessionID 匹配：参数丢失、App 进程被重建时也要把录音和 Live Activity 收干净。
     /// 进入 thinking 后另起任务问大模型、立即返回：StopAskIntent.perform() 会 await 这里，不能让它等回答。
-    func stopListening(sessionID: String) async {
+    /// trigger：结束方式，只用于耗时记录；停止按钮（StopAskIntent）和新会话顶掉旧会话都按 .button。
+    func stopListening(sessionID: String, trigger: SessionTiming.StopTrigger = .button) async {
         guard !isStopping else {
             logger.error("stopListening ignored: stop already in progress session=\(sessionID, privacy: .public)")
             return
@@ -276,9 +330,28 @@ final class SessionCoordinator {
 
         // 第一步先拿后台任务：停掉引擎后进程不再算「在录音」，要靠它撑到回答返回（SPEC 第 4 节第 9 步）。
         beginAnswerBackgroundTask(sessionID: trackedSessionID)
+        let stopStartedAt = clock.now
+        var timing = pendingTiming
+        timing.stopTrigger = trigger
+        if let listeningStartedAt {
+            timing.listeningMs = SessionTiming.milliseconds(stopStartedAt - listeningStartedAt)
+        }
+        if let lastTranscriptChangeAt {
+            timing.endDetectionMs = SessionTiming.milliseconds(stopStartedAt - lastTranscriptChangeAt)
+        }
+        let speechEndSeconds = lastSpeechAudioSeconds
+        listeningStartedAt = nil
+        lastTranscriptChangeAt = nil
+        lastSpeechAudioSeconds = nil
+        lastTranscriptText = ""
+        pendingTiming = SessionTiming()
 
         // 先停采集但保留音频会话（保活）→ 取最终转录并落盘 → thinking → 等回答 → 最后才关音频会话。
         audioCapture.stopCaptureKeepingSessionActive()
+        let recordingKeepSeconds = RecordingTrimmer.keepDuration(
+            speechEndSeconds: speechEndSeconds,
+            recordedSeconds: audioCapture.recordedSeconds
+        )
         transcriptUpdateTask?.cancel()
         transcriptUpdateTask = nil
         pendingActivityPushTask?.cancel()
@@ -286,9 +359,15 @@ final class SessionCoordinator {
 
         let finalText: String
         if let transcription {
+            let finishStartedAt = clock.now
             finalText = await transcription.finish()
+            timing.transcriptFinishMs = SessionTiming.milliseconds(clock.now - finishStartedAt)
         } else {
             finalText = ""
+        }
+        if let levels = silenceDetector?.levelSnapshot() {
+            timing.speechLevelDB = levels.speechDB.map { Int($0.rounded()) }
+            timing.endLevelDB = levels.currentDB.map { Int($0.rounded()) }
         }
         self.transcription = nil
         silenceDetector = nil
@@ -303,16 +382,23 @@ final class SessionCoordinator {
             }
         }
 
-        let screenshotURL = currentScreenshotURL
         let screenTextTask = self.screenTextTask
         self.screenTextTask = nil
+        let jpegTask = screenshotJPEGTask
+        screenshotJPEGTask = nil
+        let speculative = speculativeRun
+        speculativeRun = nil
+        let speculativeCount = speculativeRequestCount
+        speculativeRequestCount = 0
         currentSessionID = nil
         currentScreenshotURL = nil
         latestTranscriptTail = ""
         lastActivityPush = nil
 
         guard !question.isEmpty else {
+            speculative?.cancel()
             screenTextTask?.cancel()
+            jpegTask?.cancel()
             // 没识别到文字就不问大模型，按「没听到」提示后结束。
             logger.notice("stopListening: empty transcript session=\(trackedSessionID.uuidString, privacy: .public)")
             await presentFailureThenEnd(.noSpeech, sessionID: trackedSessionID)
@@ -320,25 +406,51 @@ final class SessionCoordinator {
             return
         }
 
-        answeringSessionID = trackedSessionID
-        let thinkingState = AskActivityAttributes.ContentState(
-            phase: .thinking,
-            transcriptTail: String(question.suffix(Self.maxTranscriptTailLength)),
-            summary: nil,
-            errorMessage: nil,
-            startedAt: currentState?.startedAt ?? .now
-        )
-        await updateCurrentActivity(thinkingState, alert: nil)
-        logger.info(
-            "thinking session=\(trackedSessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public) hasScreenshot=\(screenshotURL != nil, privacy: .public)"
-        )
+        // 提前请求的问题和最终转录一致（忽略标点空格）就直接用它，否则取消、用最终转录重发。
+        let run: QuickAnswerRun
+        if let speculative, speculative.normalizedQuestion == QuickAnswerRun.normalize(question) {
+            run = speculative
+            timing.speculation = .hit
+            timing.speculationLeadMs = Self.milliseconds(stopStartedAt - speculative.startedAt)
+            logger.info(
+                "speculate hit session=\(trackedSessionID.uuidString, privacy: .public) leadMs=\(timing.speculationLeadMs ?? -1, privacy: .public) summaryReady=\(speculative.summary != nil, privacy: .public)"
+            )
+        } else {
+            if let speculative {
+                speculative.cancel()
+                timing.speculation = .miss
+                let finalNormalized = QuickAnswerRun.normalize(question)
+                let distance = QuickAnswerRun.editDistance(speculative.normalizedQuestion, finalNormalized)
+                timing.missSpeculativeChars = speculative.normalizedQuestion.count
+                timing.missFinalChars = finalNormalized.count
+                timing.missEditDistance = distance
+                timing.missIsExtension = finalNormalized.hasPrefix(speculative.normalizedQuestion)
+                logger.info(
+                    "speculate miss session=\(trackedSessionID.uuidString, privacy: .public) speculativeChars=\(speculative.normalizedQuestion.count, privacy: .public) finalChars=\(finalNormalized.count, privacy: .public) editDistance=\(distance, privacy: .public) isExtension=\(timing.missIsExtension ?? false, privacy: .public)"
+                )
+            }
+            // 先发请求，thinking 的灵动岛更新在 runAnswer 里做，不占请求的时间。
+            run = makeQuickAnswerRun(
+                sessionID: trackedSessionID,
+                question: question,
+                speculative: false,
+                jpegTask: jpegTask,
+                screenTextTask: screenTextTask
+            )
+        }
+        if speculativeCount > 0 {
+            timing.speculativeRequests = speculativeCount
+        }
 
+        answeringSessionID = trackedSessionID
         answerTask = Task { [weak self] in
             await self?.runAnswer(
                 sessionID: trackedSessionID,
                 question: question,
-                screenshotURL: screenshotURL,
-                screenTextTask: screenTextTask
+                run: run,
+                stopStartedAt: stopStartedAt,
+                timing: timing,
+                recordingKeepSeconds: recordingKeepSeconds
             )
         }
     }
@@ -368,6 +480,34 @@ final class SessionCoordinator {
             if let activity = Self.findActivity(id: activityID) {
                 await activity.end(nil, dismissalPolicy: .immediate)
             }
+        }
+    }
+
+    /// 灵动岛 answered 态的「复制」按钮（CopyAnswerIntent）：复制完整回答（没有就复制摘要），按钮变成对勾。
+    func copyAnswer(sessionID: String) async {
+        guard let id = UUID(uuidString: sessionID), let session = AppDatabase.fetchSession(id: id) else {
+            logger.error("copy answer failed: session not found session=\(sessionID, privacy: .public)")
+            return
+        }
+        let text = session.answer ?? session.summary ?? ""
+        guard !text.isEmpty else {
+            logger.error("copy answer failed: no answer text session=\(sessionID, privacy: .public)")
+            return
+        }
+        // TODO: 核对官方文档：App 在后台（由 LiveActivityIntent 唤起）时写 UIPasteboard 是否生效，需真机验证。
+        UIPasteboard.general.string = text
+        logger.info("answer copied session=\(sessionID, privacy: .public) chars=\(text.count, privacy: .public)")
+
+        for activityID in Self.activityIDs(sessionID: sessionID) {
+            guard let activity = Self.findActivity(id: activityID) else { continue }
+            var state = activity.content.state
+            guard state.phase == .answered else { continue }
+            state.answerCopied = true
+            if activityID == currentActivityID {
+                currentState = state
+            }
+            await activity.update(ActivityContent(state: state, staleDate: nil))
+            activityLogger.info("live activity updated answerCopied=true")
         }
     }
 
@@ -410,6 +550,10 @@ final class SessionCoordinator {
         silenceDetector = nil
         screenTextTask?.cancel()
         screenTextTask = nil
+        screenshotJPEGTask?.cancel()
+        screenshotJPEGTask = nil
+        cancelSpeculativeRun(reason: "session ended")
+        speculativeRequestCount = 0
         currentSessionID = nil
         currentScreenshotURL = nil
         latestTranscriptTail = ""
@@ -461,31 +605,57 @@ final class SessionCoordinator {
 
     // MARK: - 大模型回答
 
-    /// thinking 之后的后台流程：压缩截图 → 问大模型 → 写 AskSession → answered / failed → 关音频会话 → 结束后台任务。
+    /// 说完之后的后台流程：thinking（摘要还没到时）→ 摘要一到就 answered + Alert → 等完整回答写 AskSession →
+    /// 关音频会话 → 结束后台任务。请求本身在 run 里已经开始跑（可能是录音中提前发的）。
     private func runAnswer(
         sessionID: UUID,
         question: String,
-        screenshotURL: URL?,
-        screenTextTask: Task<String?, Never>?
+        run: QuickAnswerRun,
+        stopStartedAt: ContinuousClock.Instant,
+        timing: SessionTiming,
+        recordingKeepSeconds: Double?
     ) async {
-        let startedAt = clock.now
         logger.notice(
-            "answer start session=\(sessionID.uuidString, privacy: .public) backgroundTimeRemaining=\(UIApplication.shared.backgroundTimeRemaining, privacy: .public)"
+            "answer start session=\(sessionID.uuidString, privacy: .public) speculative=\(run.speculative, privacy: .public) backgroundTimeRemaining=\(UIApplication.shared.backgroundTimeRemaining, privacy: .public)"
         )
-
-        let imageJPEG = await Self.uploadJPEGIfPossible(url: screenshotURL, sessionID: sessionID)
-        let screenText = await awaitScreenText(screenTextTask, sessionID: sessionID)
-
-        let outcome: Result<LLMAnswer, any Error>
-        do {
-            let provider = try OpenAICompatibleProvider.fromSettings()
-            outcome = .success(
-                try await provider.ask(imageJPEG: imageJPEG, screenText: screenText, question: question, history: [])
-            )
-        } catch {
-            outcome = .failure(error)
+        guard let requestTask = run.task else {
+            logger.error("answer aborted: run has no task session=\(sessionID.uuidString, privacy: .public)")
+            return
         }
-        let latencyMs = Self.milliseconds(clock.now - startedAt)
+
+        // 摘要还没到才显示 thinking；提前请求命中且摘要已到时直接跳到 answered。
+        if run.summary == nil {
+            let thinkingState = AskActivityAttributes.ContentState(
+                phase: .thinking,
+                transcriptTail: String(question.suffix(Self.maxTranscriptTailLength)),
+                summary: nil,
+                errorMessage: nil,
+                startedAt: currentState?.startedAt ?? .now
+            )
+            await updateCurrentActivity(thinkingState, alert: nil)
+            logger.info(
+                "thinking session=\(sessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public)"
+            )
+        }
+
+        // 采用这次请求：摘要到了（或已经到了）就推到灵动岛。
+        run.summaryHandler = { [weak self, weak run] summary in
+            guard let self, let run else { return }
+            run.summaryShowTask = Task { await self.showSummary(summary, sessionID: sessionID, run: run) }
+        }
+        if let summary = run.summary {
+            run.summaryShowTask = Task { await self.showSummary(summary, sessionID: sessionID, run: run) }
+        }
+
+        // 放弃回答 / 后台时间用完会取消 answerTask，这里连带取消请求。
+        let outcome = await withTaskCancellationHandler {
+            await requestTask.value
+        } onCancel: {
+            requestTask.cancel()
+        }
+        await run.summaryShowTask?.value
+        let fullAnswerAt = clock.now
+        let latencyMs = Self.milliseconds(fullAnswerAt - stopStartedAt)
 
         // 被新会话或关闭按钮放弃了：结果只记日志，不再碰灵动岛、音频会话和后台任务（放弃方已经收尾）。
         guard answeringSessionID == sessionID else {
@@ -495,8 +665,10 @@ final class SessionCoordinator {
             return
         }
 
-        let finalState: AskActivityAttributes.ContentState
-        let alertBody: String
+        var succeeded = true
+        var answerError: String?
+        var finalShownAt: ContinuousClock.Instant?
+        var finalActivityMs: Int?
         switch outcome {
         case .success(let answer):
             updateSession(sessionID, reason: "answered") { session in
@@ -506,51 +678,120 @@ final class SessionCoordinator {
                 session.clearFailure()
                 session.statusValue = .answered
             }
-            finalState = AskActivityAttributes.ContentState(
-                phase: .answered,
-                transcriptTail: currentState?.transcriptTail ?? "",
-                summary: answer.summary,
-                errorMessage: nil,
-                startedAt: currentState?.startedAt ?? .now
-            )
-            alertBody = answer.summary
             logger.info(
-                "answered session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public)"
+                "answered session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) summaryShownEarly=\(run.summaryShownAt != nil, privacy: .public)"
             )
-        case .failure(let error):
-            // 后台任务过期时请求被取消，对用户来说就是超时（answerFailure 里处理）。
-            let failure = UserFacingFailure.answerFailure(for: error)
-            updateSession(sessionID, reason: "answer failed") { session in
-                session.markFailed(failure)
+            // 兜底：流式里没提前拿到摘要（模型把 summary 放在后面等），现在补显示。
+            if run.summaryShownAt == nil {
+                let activityStartedAt = clock.now
+                await updateCurrentActivity(answeredState(summary: answer.summary), alert: alert(body: answer.summary))
+                finalShownAt = clock.now
+                finalActivityMs = Self.milliseconds(clock.now - activityStartedAt)
             }
-            finalState = AskActivityAttributes.ContentState(
-                phase: .failed,
-                transcriptTail: currentState?.transcriptTail ?? "",
-                summary: nil,
-                errorMessage: failure.message,
-                startedAt: currentState?.startedAt ?? .now,
-                errorHint: failure.islandHint
-            )
-            alertBody = failure.message
-            logger.error(
-                "answer failed session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
+        case .failure(let error):
+            answerError = (error as? LLMError)?.logDescription ?? "\((error as NSError).domain) \((error as NSError).code)"
+            if let summary = run.summary, run.summaryShownAt != nil {
+                // 摘要已经在灵动岛上了，完整回答没拿到：用摘要当回答，会话页再做深度回答。
+                updateSession(sessionID, reason: "answered degraded") { session in
+                    session.summary = summary
+                    session.answer = summary
+                    session.needsDeepAnswer = true
+                    session.clearFailure()
+                    session.statusValue = .answered
+                }
+                logger.notice(
+                    "answer degraded to summary session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) error=\(answerError ?? "nil", privacy: .public)"
+                )
+            } else {
+                succeeded = false
+                // 后台任务过期时请求被取消，对用户来说就是超时（answerFailure 里处理）。
+                let failure = UserFacingFailure.answerFailure(for: error)
+                updateSession(sessionID, reason: "answer failed") { session in
+                    session.markFailed(failure)
+                }
+                let failedState = AskActivityAttributes.ContentState(
+                    phase: .failed,
+                    transcriptTail: currentState?.transcriptTail ?? "",
+                    summary: nil,
+                    errorMessage: failure.message,
+                    startedAt: currentState?.startedAt ?? .now,
+                    errorHint: failure.islandHint
+                )
+                logger.error(
+                    "answer failed session=\(sessionID.uuidString, privacy: .public) latencyMs=\(latencyMs, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                )
+                let activityStartedAt = clock.now
+                await updateCurrentActivity(failedState, alert: alert(body: failure.message))
+                finalShownAt = clock.now
+                finalActivityMs = Self.milliseconds(clock.now - activityStartedAt)
+            }
         }
 
-        // SPEC 第 4 节第 10 步：带 AlertConfiguration 更新 → 停用音频会话 → endBackgroundTask。
-        // TODO: 核对官方文档：确认 App 在后台时带 AlertConfiguration 的 update 会让灵动岛自动展开（M1 的 failed 已用过，answered 需真机再确认）。
-        await updateCurrentActivity(
-            finalState,
-            alert: AlertConfiguration(
-                title: "IslandAsk",
-                body: LocalizedStringResource(stringLiteral: alertBody),
-                sound: .default
+        // 汇总各环节耗时：写库给会话页耗时卡片，同一行写 timing 日志。网络各阶段另有 llm 分类的 metrics 日志。
+        var timing = timing
+        let answer = try? outcome.get()
+        timing.succeeded = succeeded
+        timing.answerError = answerError
+        timing.jpegEncodeMs = run.jpegWaitMs
+        timing.imageBytes = run.imageBytes
+        timing.ocrWaitMs = run.ocrWaitMs
+        timing.llmMs = run.llmMs
+        timing.llmSummaryMs = run.llmSummaryMs
+        timing.attempts = answer?.attempts
+        timing.network = answer?.network
+        timing.activityUpdateMs = run.activityUpdateMs ?? finalActivityMs
+        if let shownAt = run.summaryShownAt ?? finalShownAt {
+            timing.answerTotalMs = Self.milliseconds(shownAt - stopStartedAt)
+        }
+        timing.fullAnswerMs = latencyMs
+        // 灵动岛已经显示回答，再截录音末尾静音：不占用户等回答的时间。还在后台任务和音频会话保活范围内。
+        if let recordingKeepSeconds, let audioURL = try? AudioCaptureService.audioFileURL(sessionID: sessionID) {
+            let trimmed = await RecordingTrimmer.trimTail(
+                fileURL: audioURL,
+                keepSeconds: recordingKeepSeconds,
+                sessionID: sessionID
             )
-        )
+            timing.trimmedSilenceMs = trimmed.map { Int($0 * 1000) }
+        }
+        updateSession(sessionID, reason: "timing saved") { $0.timingData = timing.encoded() }
+        logger.info("timing session=\(sessionID.uuidString, privacy: .public) \(timing.logLine, privacy: .public)")
         answeringSessionID = nil
         answerTask = nil
         await audioCapture.deactivateAudioSession()
         endAnswerBackgroundTask(reason: "answer finished")
+    }
+
+    /// 流式摘要一到：写进库（状态仍是 thinking，完整回答到了才转 answered），灵动岛切 answered 并展开提示。
+    private func showSummary(_ summary: String, sessionID: UUID, run: QuickAnswerRun) async {
+        guard answeringSessionID == sessionID, run.summaryShownAt == nil else { return }
+        updateSession(sessionID, reason: "summary ready") { $0.summary = summary }
+        let activityStartedAt = clock.now
+        await updateCurrentActivity(answeredState(summary: summary), alert: alert(body: summary))
+        run.summaryShownAt = clock.now
+        run.activityUpdateMs = Self.milliseconds(clock.now - activityStartedAt)
+        logger.info(
+            "summary shown session=\(sessionID.uuidString, privacy: .public) chars=\(summary.count, privacy: .public) llmSummaryMs=\(run.llmSummaryMs ?? -1, privacy: .public)"
+        )
+    }
+
+    private func answeredState(summary: String) -> AskActivityAttributes.ContentState {
+        AskActivityAttributes.ContentState(
+            phase: .answered,
+            transcriptTail: currentState?.transcriptTail ?? "",
+            summary: summary,
+            errorMessage: nil,
+            startedAt: currentState?.startedAt ?? .now
+        )
+    }
+
+    // SPEC 第 4 节第 10 步：带 AlertConfiguration 更新 → 停用音频会话 → endBackgroundTask。
+    // TODO: 核对官方文档：确认 App 在后台时带 AlertConfiguration 的 update 会让灵动岛自动展开（M1 的 failed 已用过，answered 需真机再确认）。
+    private func alert(body: String) -> AlertConfiguration {
+        AlertConfiguration(
+            title: "IslandAsk",
+            body: LocalizedStringResource(stringLiteral: body),
+            sound: .default
+        )
     }
 
     /// 放弃正在等的回答（新会话开始 / 用户关闭）。不关音频会话：调用方按需处理。
@@ -604,7 +845,7 @@ final class SessionCoordinator {
 
     /// 截图解码和 JPEG 编码比较重，放到主线程之外。压缩失败不影响提问，只是不带图。
     @concurrent
-    private nonisolated static func uploadJPEGIfPossible(url: URL?, sessionID: UUID) async -> Data? {
+    nonisolated static func uploadJPEGIfPossible(url: URL?, sessionID: UUID) async -> Data? {
         guard let url else { return nil }
         do {
             return try ScreenshotStore.jpegForUpload(url: url, sessionID: sessionID)
@@ -627,13 +868,31 @@ final class SessionCoordinator {
             logger.info("ocr skipped: disabled in settings session=\(sessionID.uuidString, privacy: .public)")
             return
         }
-        screenTextTask = Task {
+        let task = Task {
             await TextRecognizer.recognize(imageURL: screenshotURL, sessionID: sessionID)
+        }
+        screenTextTask = task
+        // OCR 在用户还在说话时完成，就把屏幕上的词交给转录当提示词。
+        Task { [weak self] in
+            guard let text = await task.value else { return }
+            await self?.applyRecognitionHints(from: text, sessionID: sessionID)
         }
     }
 
+    private func applyRecognitionHints(from screenText: String, sessionID: UUID) async {
+        guard currentSessionID == sessionID, let transcription else {
+            logger.info("recognition hints skipped: listening already ended session=\(sessionID.uuidString, privacy: .public)")
+            return
+        }
+        let terms = TextRecognizer.contextualTerms(from: screenText)
+        logger.info(
+            "recognition hints session=\(sessionID.uuidString, privacy: .public) terms=\(terms.count, privacy: .public)"
+        )
+        await transcription.updateContext(terms: terms)
+    }
+
     /// 问大模型前最多再等 screenTextWaitLimit；没识别完就先不带文字问，识别完再补写进库，供深度回答和追问使用。
-    private func awaitScreenText(_ task: Task<String?, Never>?, sessionID: UUID) async -> String? {
+    func awaitScreenText(_ task: Task<String?, Never>?, sessionID: UUID) async -> String? {
         guard let task else { return nil }
         enum Wait: Sendable {
             case finished(String?)
@@ -673,22 +932,6 @@ final class SessionCoordinator {
         }
     }
 
-    /// App 内请求（深度回答、追问、重问）用的 OCR 文字：已有就复用；没有（旧会话 / 当时没识别完）就现在识别并写库。
-    /// 设置里关掉后一律不带。
-    private func screenTextForInAppRequest(sessionID: UUID) async -> String? {
-        guard AppSettings.screenTextRecognitionEnabled,
-              let session = AppDatabase.fetchSession(id: sessionID) else { return nil }
-        if let stored = session.ocrText {
-            return stored
-        }
-        guard let screenshotURL = session.screenshotURL else { return nil }
-        let text = await TextRecognizer.recognize(imageURL: screenshotURL, sessionID: sessionID)
-        if let text {
-            updateSession(sessionID, reason: "ocr text saved in app") { $0.ocrText = text }
-        }
-        return text
-    }
-
     /// 起录前的权限检查：Intent 里不能弹授权框，没授权就只能提示用户回 App 处理。
     private static func missingPermission() -> (failure: UserFacingFailure, error: SessionCoordinatorError)? {
         if PermissionManager.microphoneStatus != .granted {
@@ -703,7 +946,7 @@ final class SessionCoordinator {
     // MARK: - 数据库
 
     /// 所有 AskSession 的修改都走这里（SPEC 第 6.4 节：任何状态转换都同步写入数据库）。
-    private func updateSession(_ id: UUID, reason: String, _ mutate: (AskSession) -> Void) {
+    func updateSession(_ id: UUID, reason: String, _ mutate: (AskSession) -> Void) {
         guard let session = AppDatabase.fetchSession(id: id) else {
             logger.error(
                 "session update skipped: not found session=\(id.uuidString, privacy: .public) reason=\(reason, privacy: .public)"
@@ -714,236 +957,24 @@ final class SessionCoordinator {
         AppDatabase.save(reason: "\(reason) session=\(id.uuidString)")
     }
 
-    // MARK: - App 内深度回答 / 追问 / 重问 / 深链
-
-    /// 会话页的深度回答：开思考、流式，结果写进 deepAnswer / deepReasoning。
-    /// 只在快速回答已到达、还没有深度回答、没有其它请求进行时开始；流由协调器持有，离开会话页也继续。
-    func startDeepAnswer(sessionID: UUID) {
-        guard let session = AppDatabase.fetchSession(id: sessionID) else {
-            logger.error("deep answer skipped: session not found session=\(sessionID.uuidString, privacy: .public)")
-            return
-        }
-        let question = session.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard session.statusValue == .answered, session.deepAnswer == nil, !question.isEmpty else {
-            logger.info(
-                "deep answer skipped session=\(sessionID.uuidString, privacy: .public) status=\(session.status, privacy: .public) hasDeep=\(session.deepAnswer != nil, privacy: .public)"
-            )
-            return
-        }
-        guard inAppRequestSessionIDs.insert(sessionID).inserted else {
-            logger.notice("deep answer skipped: request in flight session=\(sessionID.uuidString, privacy: .public)")
-            return
-        }
-
-        let screenshotURL = session.screenshotURL
-        session.deepError = nil
-        AppDatabase.save(reason: "deep answer start session=\(sessionID.uuidString)")
-        logger.info("deep answer start session=\(sessionID.uuidString, privacy: .public)")
-
-        let reply = StreamingReplyStore.shared.begin(sessionID: sessionID, kind: .deepAnswer)
-        let work = Task {
-            let screenText = await SessionCoordinator.shared.screenTextForInAppRequest(sessionID: sessionID)
-            try await Self.consumeDeepStream(
-                into: reply,
-                sessionID: sessionID,
-                screenshotURL: screenshotURL,
-                screenText: screenText,
-                question: question,
-                history: []
-            )
-        }
-        // 用户切走 App 时还有约 30 秒；用完就取消，下次打开会话页重新生成。
-        let backgroundToken = BackgroundTaskToken(name: "islandask.deepAnswer") { work.cancel() }
-
-        Task { [weak self] in
-            let result = await work.result
-            backgroundToken.end()
-            self?.finishDeepAnswer(sessionID: sessionID, reply: reply, result: result)
-        }
-    }
-
-    private func finishDeepAnswer(sessionID: UUID, reply: StreamingReply, result: Result<Void, any Error>) {
-        defer {
-            inAppRequestSessionIDs.remove(sessionID)
-            StreamingReplyStore.shared.end(sessionID: sessionID)
-        }
-        reply.flush()
-        switch result {
-        case .success:
-            updateSession(sessionID, reason: "deep answer finished") { session in
-                session.deepAnswer = reply.content
-                session.deepReasoning = reply.reasoning.isEmpty ? nil : reply.reasoning
-                session.deepError = nil
-            }
-            logger.info(
-                "deep answer succeeded session=\(sessionID.uuidString, privacy: .public) contentChars=\(reply.content.count, privacy: .public) reasoningChars=\(reply.reasoning.count, privacy: .public)"
-            )
-        case .failure(let error):
-            let message = Self.deepFailureMessage(for: error)
-            updateSession(sessionID, reason: "deep answer failed") { session in
-                session.deepError = message
-            }
-            logger.error(
-                "deep answer failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-        }
-    }
-
-    /// 会话页底部的追问（SPEC 第 6.12 节）：沿用同一张截图和上下文（首轮问题 + 回答 + 已有追问），深度思考 + 流式。
-    /// 失败时撤回这条 user 消息并抛错，UI 把文字放回输入框。
-    func askFollowUp(sessionID: UUID, text: String) async throws {
-        let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty else { return }
-        guard let session = AppDatabase.fetchSession(id: sessionID) else {
-            logger.error("follow-up failed: session not found session=\(sessionID.uuidString, privacy: .public)")
-            throw SessionCoordinatorError.sessionNotFound
-        }
-        guard inAppRequestSessionIDs.insert(sessionID).inserted else {
-            logger.notice("follow-up ignored: request in flight session=\(sessionID.uuidString, privacy: .public)")
-            return
-        }
-        defer {
-            inAppRequestSessionIDs.remove(sessionID)
-            StreamingReplyStore.shared.end(sessionID: sessionID)
-        }
-
-        let history = session.conversationTurns
-        let screenshotURL = session.screenshotURL
-        let userMessage = ChatMessage(role: .user, content: question)
-        session.messages.append(userMessage)
-        AppDatabase.save(reason: "follow-up user message session=\(sessionID.uuidString)")
-        logger.info(
-            "follow-up start session=\(sessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public) history=\(history.count, privacy: .public)"
-        )
-
-        let reply = StreamingReplyStore.shared.begin(sessionID: sessionID, kind: .followUp)
-        let work = Task {
-            let screenText = await SessionCoordinator.shared.screenTextForInAppRequest(sessionID: sessionID)
-            try await Self.consumeDeepStream(
-                into: reply,
-                sessionID: sessionID,
-                screenshotURL: screenshotURL,
-                screenText: screenText,
-                question: question,
-                history: history
-            )
-        }
-        // 用户在等回答时切走 App，后台时间用完就取消请求。
-        let backgroundToken = BackgroundTaskToken(name: "islandask.followUp") { work.cancel() }
-        defer { backgroundToken.end() }
-
+    /// 按设置页的保留天数删除旧会话（连同截图、录音）。App 回到前台、改保留天数时调用；进行中的会话由 deleteSession 跳过。
+    func purgeExpiredSessions() {
+        let days = AppSettings.historyRetentionDays
+        guard days > 0 else { return }
+        guard let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: .now) else { return }
+        let descriptor = FetchDescriptor<AskSession>(predicate: #Predicate { $0.createdAt < cutoff })
+        let expired: [AskSession]
         do {
-            try await work.value
-            reply.flush()
-            session.messages.append(
-                ChatMessage(
-                    role: .assistant,
-                    content: reply.content,
-                    reasoning: reply.reasoning.isEmpty ? nil : reply.reasoning
-                )
-            )
-            AppDatabase.save(reason: "follow-up answered session=\(sessionID.uuidString)")
-            logger.info(
-                "follow-up succeeded session=\(sessionID.uuidString, privacy: .public) contentChars=\(reply.content.count, privacy: .public) reasoningChars=\(reply.reasoning.count, privacy: .public)"
-            )
+            expired = try AppDatabase.context.fetch(descriptor)
         } catch {
-            logger.error(
-                "follow-up failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
-            AppDatabase.context.delete(userMessage)
-            AppDatabase.save(reason: "follow-up rollback session=\(sessionID.uuidString)")
-            throw SessionCoordinatorError.followUpFailed(Self.deepFailureMessage(for: error))
-        }
-    }
-
-    /// 深度回答和追问共用：压缩截图 → 开流 → 片段写进 reply。在主线程迭代，reply 是主线程对象。
-    private static func consumeDeepStream(
-        into reply: StreamingReply,
-        sessionID: UUID,
-        screenshotURL: URL?,
-        screenText: String?,
-        question: String,
-        history: [LLMTurn]
-    ) async throws {
-        let imageJPEG = await uploadJPEGIfPossible(url: screenshotURL, sessionID: sessionID)
-        let provider = try OpenAICompatibleProvider.fromSettings()
-        let stream = provider.streamDeepAnswer(
-            imageJPEG: imageJPEG,
-            screenText: screenText,
-            question: question,
-            history: history
-        )
-        for try await event in stream {
-            reply.append(event)
-        }
-        try Task.checkCancellation()
-    }
-
-    /// 深度档被取消通常是切到后台时间用完，提示用户回来重新生成。
-    private static func deepFailureMessage(for error: any Error) -> String {
-        if error is CancellationError {
-            return "切到后台后被中断"
-        }
-        if let llmError = error as? LLMError, case .cancelled = llmError {
-            return "切到后台后被中断"
-        }
-        return (error as? LLMError)?.errorDescription ?? error.localizedDescription
-    }
-
-    /// 失败会话在 App 内重新提问（SPEC 第 8 节：断网或 API 超时，App 内可重试）。只更新数据库，不碰灵动岛。
-    func retryAnswer(sessionID: UUID) async {
-        guard let session = AppDatabase.fetchSession(id: sessionID) else {
-            logger.error("retry failed: session not found session=\(sessionID.uuidString, privacy: .public)")
+            logger.error("purge failed: fetch error=\(error.localizedDescription, privacy: .public)")
             return
         }
-        let question = session.transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !question.isEmpty, session.statusValue == .failed, answeringSessionID != sessionID else {
-            logger.notice(
-                "retry ignored session=\(sessionID.uuidString, privacy: .public) status=\(session.status, privacy: .public) chars=\(question.count, privacy: .public)"
-            )
-            return
-        }
-        guard inAppRequestSessionIDs.insert(sessionID).inserted else {
-            logger.notice("retry ignored: request in flight session=\(sessionID.uuidString, privacy: .public)")
-            return
-        }
-        defer { inAppRequestSessionIDs.remove(sessionID) }
-
-        let screenshotURL = session.screenshotURL
-        session.statusValue = .thinking
-        session.clearFailure()
-        AppDatabase.save(reason: "retry thinking session=\(sessionID.uuidString)")
-        logger.info("retry start session=\(sessionID.uuidString, privacy: .public)")
-
-        let backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "islandask.retry")
-        defer {
-            if backgroundTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTaskID)
-            }
-        }
-
-        do {
-            let imageJPEG = await Self.uploadJPEGIfPossible(url: screenshotURL, sessionID: sessionID)
-            let screenText = await screenTextForInAppRequest(sessionID: sessionID)
-            let provider = try OpenAICompatibleProvider.fromSettings()
-            let answer = try await provider.ask(
-                imageJPEG: imageJPEG,
-                screenText: screenText,
-                question: question,
-                history: []
-            )
-            session.summary = answer.summary
-            session.answer = answer.answer
-            session.needsDeepAnswer = answer.needsDeep ?? true
-            session.statusValue = .answered
-            AppDatabase.save(reason: "retry answered session=\(sessionID.uuidString)")
-            logger.info("retry succeeded session=\(sessionID.uuidString, privacy: .public)")
-        } catch {
-            session.markFailed(.answerFailure(for: error))
-            AppDatabase.save(reason: "retry failed session=\(sessionID.uuidString)")
-            logger.error(
-                "retry failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
-            )
+        guard !expired.isEmpty else { return }
+        let ids = expired.map(\.id)
+        logger.info("purging expired sessions count=\(ids.count, privacy: .public) retentionDays=\(days, privacy: .public)")
+        for id in ids {
+            deleteSession(id: id)
         }
     }
 
@@ -962,25 +993,7 @@ final class SessionCoordinator {
         ScreenshotStore.removeArtifacts(sessionID: id)
     }
 
-    func isInAppRequestInFlight(sessionID: UUID) -> Bool {
-        inAppRequestSessionIDs.contains(sessionID)
-    }
-
-    /// 点灵动岛经深链进入会话页（SPEC 第 4 节第 11 步）：结束这个 Live Activity。
-    /// 还在录音或等回答时不结束，让灵动岛继续显示进度。
-    func openedSession(id: UUID) async {
-        guard currentSessionID != id, answeringSessionID != id else {
-            activityLogger.info("opened session=\(id.uuidString, privacy: .public) still in progress; keeping live activity")
-            return
-        }
-        guard !Self.activityIDs(sessionID: id.uuidString).isEmpty else {
-            activityLogger.info("opened session=\(id.uuidString, privacy: .public) has no live activity")
-            return
-        }
-        await dismiss(sessionID: id.uuidString)
-    }
-
-    private nonisolated static func milliseconds(_ duration: Duration) -> Int {
+    nonisolated static func milliseconds(_ duration: Duration) -> Int {
         let (seconds, attoseconds) = duration.components
         return Int(seconds) * 1000 + Int(attoseconds / 1_000_000_000_000_000)
     }
@@ -1007,6 +1020,10 @@ final class SessionCoordinator {
         silenceDetector = nil
         screenTextTask?.cancel()
         screenTextTask = nil
+        screenshotJPEGTask?.cancel()
+        screenshotJPEGTask = nil
+        cancelSpeculativeRun(reason: "session ended")
+        speculativeRequestCount = 0
         currentSessionID = nil
         currentScreenshotURL = nil
         currentState = nil
@@ -1019,166 +1036,6 @@ final class SessionCoordinator {
         await audioCapture.deactivateAudioSession()
     }
 
-    /// App 重新打开时收尾：如果当前没有在录音、也没在等回答，却还有残留的 Live Activity
-    /// （停止时进程被挂起导致 activity.end 没执行完），补一次结束。
-    /// answered / failed 的灵动岛也在这里结束，对应 SPEC 6.10「打开 App 查看后结束」。
-    func endOrphanActivitiesIfNeeded() async {
-        guard currentSessionID == nil, answeringSessionID == nil, !isStartingSession else { return }
-
-        let activities = Activity<AskActivityAttributes>.activities
-        guard !activities.isEmpty else { return }
-
-        activityLogger.info("cleaning up \(activities.count, privacy: .public) orphan live activity(ies)")
-        for activity in activities {
-            await activity.end(nil, dismissalPolicy: .immediate)
-        }
-        currentActivityID = nil
-    }
-
-    // MARK: - 转录 → Live Activity
-
-    private func startTranscriptUpdates() {
-        guard let transcription else { return }
-        transcriptUpdateTask = Task { [weak self] in
-            for await update in transcription.updates {
-                guard let self else { return }
-                self.handleTranscriptUpdate(update)
-            }
-        }
-    }
-
-    private func handleTranscriptUpdate(_ update: TranscriptUpdate) {
-        let display = update.displayText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !display.isEmpty else { return }
-        silenceDetector?.noteTranscript(display)
-
-        if !didLogFirstTranscriptUpdate {
-            didLogFirstTranscriptUpdate = true
-            logger.info("first transcript update chars=\(display.count, privacy: .public)")
-        }
-
-        let tail = String(display.suffix(Self.maxTranscriptTailLength))
-        latestTranscriptTail = tail
-        guard tail != currentState?.transcriptTail else { return }
-        scheduleTranscriptPush()
-    }
-
-    /// 节流：距上次推送满 1 秒就立即推，否则排一个 trailing 任务补推最新内容。
-    private func scheduleTranscriptPush() {
-        guard pendingActivityPushTask == nil else { return }
-
-        let now = clock.now
-        var delay = Duration.zero
-        if let lastActivityPush, now - lastActivityPush < .seconds(1) {
-            delay = .seconds(1) - (now - lastActivityPush)
-        }
-
-        pendingActivityPushTask = Task { [weak self] in
-            if delay > .zero {
-                try? await Task.sleep(for: delay)
-            }
-            guard let self, !Task.isCancelled else { return }
-            await self.pushTranscriptTail()
-        }
-    }
-
-    private func pushTranscriptTail() async {
-        pendingActivityPushTask = nil
-        guard let activityID = currentActivityID,
-              let activity = Self.findActivity(id: activityID),
-              var state = currentState else { return }
-
-        let tail = latestTranscriptTail
-        guard !tail.isEmpty, tail != state.transcriptTail else { return }
-
-        state.transcriptTail = tail
-        currentState = state
-        lastActivityPush = clock.now
-        activityLogger.info("transcript tail pushed chars=\(tail.count, privacy: .public)")
-        await activity.update(ActivityContent(state: state, staleDate: nil))
-
-        // 推送期间又来了新文字：补一次（仍受 1 秒节流约束）。
-        if latestTranscriptTail != state.transcriptTail {
-            scheduleTranscriptPush()
-        }
-    }
-
-    // MARK: - 收尾工具
-
-    /// 更新当前 Live Activity 并同步 currentState；activity 已不存在时只记日志。
-    private func updateCurrentActivity(
-        _ state: AskActivityAttributes.ContentState,
-        alert: AlertConfiguration?
-    ) async {
-        currentState = state
-        guard let activityID = currentActivityID, let activity = Self.findActivity(id: activityID) else {
-            activityLogger.error("update skipped: no live activity phase=\(state.phase.rawValue, privacy: .public)")
-            return
-        }
-        let content = ActivityContent(state: state, staleDate: nil)
-        if let alert {
-            await activity.update(content, alertConfiguration: alert)
-        } else {
-            await activity.update(content)
-        }
-        activityLogger.info(
-            "live activity updated phase=\(state.phase.rawValue, privacy: .public) alert=\(alert != nil, privacy: .public)"
-        )
-    }
-
-    /// 结束当前所有本类型的 Live Activity（App 被重启过也能清干净）。
-    private func endAllActivities(reason: String) async {
-        pendingActivityPushTask?.cancel()
-        pendingActivityPushTask = nil
-        transcriptUpdateTask?.cancel()
-        transcriptUpdateTask = nil
-
-        let activities = Activity<AskActivityAttributes>.activities
-        guard !activities.isEmpty else {
-            currentActivityID = nil
-            return
-        }
-
-        activityLogger.info(
-            "ending \(activities.count, privacy: .public) live activity(ies) reason=\(reason, privacy: .public)"
-        )
-        for activity in activities {
-            await activity.end(nil, dismissalPolicy: .immediate)
-        }
-        currentActivityID = nil
-    }
-
-    /// failed 态展示一会儿再结束；期间用后台任务保活（音频会话可能已经关了）。
-    private func scheduleActivityEnd(
-        activityID: String,
-        after duration: Duration,
-        backgroundTaskID: UIBackgroundTaskIdentifier
-    ) {
-        Task { [weak self] in
-            try? await Task.sleep(for: duration)
-            if let activity = Self.findActivity(id: activityID) {
-                await activity.end(nil, dismissalPolicy: .immediate)
-            }
-            if let self, self.currentActivityID == activityID {
-                self.currentActivityID = nil
-                self.currentState = nil
-            }
-            if backgroundTaskID != .invalid {
-                UIApplication.shared.endBackgroundTask(backgroundTaskID)
-            }
-        }
-    }
-
-    /// Activity 不是 Sendable，不长期持有；需要时按 id 从 ActivityKit 里取一个新的引用。
-    private nonisolated static func findActivity(id: String) -> Activity<AskActivityAttributes>? {
-        Activity<AskActivityAttributes>.activities.first { $0.id == id }
-    }
-
-    private nonisolated static func activityIDs(sessionID: String) -> [String] {
-        Activity<AskActivityAttributes>.activities
-            .filter { $0.attributes.sessionID == sessionID }
-            .map(\.id)
-    }
 }
 
 /// errorDescription 会显示在快捷指令的错误提示里，写成用户能照着做的话；原始错误码只进日志。
