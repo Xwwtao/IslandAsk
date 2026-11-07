@@ -47,6 +47,8 @@ struct LibraryView: View {
     @State private var typeFilter: CardType?
     @State private var searchText = ""
     @State private var aiSearch = AISearchModel()
+    /// 列表里的标题行滚出屏幕后，顶栏中间显示小标题。
+    @State private var showsInlineTitle = false
     @State private var showsShortcutGuide = false
 
     // 多选
@@ -63,6 +65,8 @@ struct LibraryView: View {
             Group {
                 if cards.isEmpty {
                     VStack(spacing: 0) {
+                        titleHeader
+                            .padding(.horizontal, Theme.Spacing.page + 4)
                         clipboardBanner
                             .padding(.horizontal, Theme.Spacing.page)
                         emptyState
@@ -80,8 +84,10 @@ struct LibraryView: View {
                 Task { await ClipboardLinkDetector.shared.refresh() }
             }
             .animation(.snappy, value: ClipboardLinkDetector.shared.state)
+            // 标题「IslandAsk」和剪贴板粘贴按钮是列表里的第一行（titleHeader），系统大标题不用：
+            // 放在系统大标题位置（ToolbarItemPlacement.largeTitle）的按钮，列表有内容时点不到（模拟器实测，普通按钮也一样）。
             .navigationTitle(isSelecting ? selectionTitle : "IslandAsk")
-            .navigationBarTitleDisplayMode(isSelecting ? .inline : .automatic)
+            .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $searchText, prompt: "搜索，比如「上个月存的咖啡店」")
             .onSubmit(of: .search) {
                 guard NaturalLanguageSearch.shouldAutoRun(query: searchText, localResultCount: textMatchedCards.count) else { return }
@@ -151,7 +157,16 @@ struct LibraryView: View {
 
     private var list: some View {
         List(selection: listSelection) {
-            if ClipboardLinkDetector.shared.state != .hidden, !isSelecting {
+            if !isSelecting {
+                Section {
+                    titleHeader
+                        .listRowInsets(EdgeInsets(top: 0, leading: 4, bottom: 0, trailing: 4))
+                        .listRowBackground(Color.clear)
+                        .selectionDisabled()
+                }
+                .listSectionSpacing(0)
+            }
+            if ClipboardLinkDetector.shared.isShowingResult, !isSelecting {
                 Section {
                     clipboardBanner
                         .listRowInsets(EdgeInsets())
@@ -184,8 +199,36 @@ struct LibraryView: View {
             }
         }
         .listStyle(.insetGrouped)
+        // 标题行是列表第一行：去掉列表顶部默认留白，让它和系统大标题的位置差不多。
+        .contentMargins(.top, 0, for: .scrollContent)
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y + geometry.contentInsets.top > Self.inlineTitleThreshold
+        } action: { _, scrolledPast in
+            showsInlineTitle = scrolledPast
+        }
         .animation(.default, value: isSelecting)
     }
+
+    // MARK: - 标题行
+
+    /// 列表第一行：大号标题 + 剪贴板粘贴收藏按钮（M-C2 剪贴板入口）。
+    private var titleHeader: some View {
+        HStack(alignment: .center, spacing: 8) {
+            // 标题优先占位：字号调大、屏幕窄时先收起按钮旁的说明，实在放不下再略微缩小标题，不出现省略号。
+            Text("IslandAsk")
+                .font(.largeTitle.bold())
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+                .layoutPriority(1)
+                .accessibilityAddTraits(.isHeader)
+            Spacer(minLength: 8)
+            ClipboardPasteButton()
+        }
+        .padding(.vertical, 4)
+    }
+
+    /// 标题行大约的高度：滚过这么多，顶栏显示小标题。
+    private static let inlineTitleThreshold: CGFloat = 44
 
     // MARK: - AI 搜索
 
@@ -346,6 +389,14 @@ struct LibraryView: View {
                 }
             }
         } else {
+            // 标题行（列表第一行）滚出屏幕后，顶栏中间才显示小标题；没滚动时顶栏不重复显示标题。
+            ToolbarItem(placement: .principal) {
+                Text("IslandAsk")
+                    .font(.headline)
+                    .opacity(showsInlineTitle ? 1 : 0)
+                    .animation(Theme.Motion.quick, value: showsInlineTitle)
+                    .accessibilityHidden(!showsInlineTitle)
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 if !cards.isEmpty {
                     Button("选择") {

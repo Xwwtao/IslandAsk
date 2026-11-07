@@ -2,10 +2,10 @@
 //  ClipboardLinkBanner.swift
 //  IslandAsk
 //
-//  收藏库最上方的剪贴板提示条（M-C2，SPEC 第 6.13 节「剪贴板入口」）。状态来自 ClipboardLinkDetector：
-//  - 剪贴板里可能有链接：「剪贴板里有链接」+ 系统 PasteButton「收藏」+「✕」。收藏前读不到内容，所以不显示是哪个链接。
-//  - 收藏中 / 已收藏：<标题> / 已收藏过（可点开那张卡片）/ 没有找到链接。
-//  hidden 时不占位置。
+//  剪贴板收藏（M-C2，SPEC 第 6.13 节「剪贴板入口」）的界面，状态来自 ClipboardLinkDetector：
+//  - ClipboardPasteButton：收藏库标题「IslandAsk」右边一直显示的系统 PasteButton，左边两行小字说明；检测到链接时说明变主题色。
+//  - ClipboardLinkBanner：只在粘贴之后短暂显示结果：收藏中 / 已收藏：<标题> / 已收藏过（可点开那张卡片）/ 没有找到链接。
+//  其余时候不占位置。
 //
 
 import SwiftUI
@@ -21,35 +21,8 @@ struct ClipboardLinkBanner: View {
         case .hidden:
             EmptyView()
         case .available:
-            HStack(spacing: 12) {
-                icon("doc.on.clipboard", tint: .accentColor)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("剪贴板里有链接")
-                        .font(.subheadline.weight(.semibold))
-                    Text("从小红书、微信「复制链接」后，可以在这里收藏")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                }
-                Spacer(minLength: 4)
-                // TODO: 核对官方文档：PasteButton(payloadType:onPaste:) 回调所在线程；这里统一切回主线程再处理。
-                PasteButton(payloadType: String.self) { strings in
-                    Task { @MainActor in
-                        ClipboardLinkDetector.shared.handlePaste(strings)
-                    }
-                }
-                .labelStyle(.titleOnly)
-                .buttonBorderShape(.capsule)
-                .tint(.accentColor)
-                Button("不收藏", systemImage: "xmark") {
-                    detector.dismiss()
-                }
-                .labelStyle(.iconOnly)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .buttonStyle(.borderless)
-            }
-            .bannerStyle()
+            // 检测到链接时只让大标题右边的粘贴按钮高亮，不再占一条提示条。
+            EmptyView()
         case .saving:
             HStack(spacing: 12) {
                 ProgressView()
@@ -115,6 +88,52 @@ struct ClipboardLinkBanner: View {
             .foregroundStyle(tint)
             .frame(width: 28)
             .accessibilityHidden(true)
+    }
+}
+
+/// 大标题右边的粘贴收藏按钮（系统 PasteButton，不弹「是否允许粘贴」）+ 左边两行小字说明。
+/// 按钮固定用主题色：系统会校验 PasteButton 的外观，灰色这类低对比度的 tint 会让点击被静默拒绝
+/// （模拟器实测：蓝色能粘贴，灰色点了没有任何回调）。检测到链接时由说明文字变色提示。
+/// 按钮上不能盖其它视图，否则系统同样会拒绝粘贴。
+struct ClipboardPasteButton: View {
+
+    private var detector: ClipboardLinkDetector { .shared }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            // 放不下时（字号调大、屏幕窄）整段说明不显示，把空间让给标题。
+            ViewThatFits(in: .horizontal) {
+                hint
+                Color.clear.frame(width: 0, height: 0)
+            }
+            // TODO: 核对官方文档：PasteButton(payloadType:onPaste:) 回调所在线程；这里统一切回主线程再处理。
+            PasteButton(payloadType: String.self) { strings in
+                Task { @MainActor in
+                    ClipboardLinkDetector.shared.handlePaste(strings)
+                }
+            }
+            .labelStyle(.titleAndIcon)
+            .buttonBorderShape(.capsule)
+            .controlSize(.small)
+            .tint(.accentColor)
+            .disabled(detector.isShowingResult)
+            .accessibilityHint("粘贴剪贴板里的链接并收藏")
+        }
+    }
+
+    /// 告诉用户这个按钮是收藏用的：检测到链接时用主题色说「剪贴板有链接」，否则灰色说明用法。
+    private var hint: some View {
+        VStack(alignment: .trailing, spacing: 0) {
+            Text(detector.hasLink ? "剪贴板有链接" : "点击粘贴")
+            Text("收藏链接")
+        }
+        .font(.caption2.weight(detector.hasLink ? .semibold : .regular))
+        .foregroundStyle(detector.hasLink ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+        .multilineTextAlignment(.trailing)
+        .lineLimit(1)
+        .fixedSize()
+        .animation(Theme.Motion.quick, value: detector.hasLink)
+        .accessibilityHidden(true)
     }
 }
 

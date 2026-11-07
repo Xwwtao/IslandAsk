@@ -4,6 +4,8 @@ Nov 1, 2026 · @Wentao Xie
 
 Nov 6, 2026 修订：产品方向从「对屏幕提问」扩展为「全局收藏 + AI 整理」，屏幕提问保留，作为卡片的一种来源。新增内容见第 1、2 节，6.3、6.7、6.9–6.12 节，新的 6.13–6.15 节，第 7 节的 M-C1–M-C4，以及第 8、9 节的对应条目。
 
+Nov 7, 2026 修订：新增「收藏之后」方向（M-D 系列）：关键信息操作与提醒、多张卡片 AI 整理、重新浮现（没看过、地点地图、桌面小组件）、隐私与数据（打码、本机整理、导出、App 锁）、相册导入与轻点背面。新增内容见第 1 节，第 3–5 节和 6.1、6.4、6.8–6.12 节的 M-D 条目，新的 6.16–6.20 节，第 7 节的 M-D1–M-D5，以及第 8、9 节的对应条目。
+
 ## 1. 项目概述与目标交互
 
 iOS 没有跨 App 的收藏夹：微信、小红书、B 站、Safari 的收藏各自分散，事后很难找回。本 App 让用户在任意 App 里按下 Action Button，不离开当前界面，用一句话（或者什么都不说）完成下面两件事之一：
@@ -34,7 +36,15 @@ agent 的定位：替用户「动手」整理，包括起标题、归类、打�
 
 目标交互 C（带链接收藏，M-C2）：在任意 App 里点「分享」→ 选择本 App，链接、标题和可选的附注文字直接存为卡片。小红书、微信等不调起系统分享菜单的 App：在它们的面板里点「复制链接」，回到本 App 后在收藏库顶部一键收藏。
 
-非目标（当前不做）：锁屏状态下提问、实时连续共享屏幕、语音播报回答、Android 版本、自建服务端、iCloud 多设备同步、替用户操作其他 App。
+收藏之后（M-D 系列）：收藏工具最常见的问题是存了就再也不看。M-D 系列让收藏能被用起来：
+
+- 变成行动：地址、电话、时间等关键信息一键打开地图、拨打、加到日历；语音附注里的时间（「周末去」）变成提醒；过期的活动自动灰显。
+- 汇总：在收藏库多选几张卡片，让 AI 排行程、做对比、合成笔记。
+- 重新出现：「没看过」筛选、地点卡片地图、桌面小组件「今天重温」。
+- 隐私与数据：发给模型前在本机给敏感信息打码、断网时用本机模型整理、导出、App 锁。
+- 更多入口：从相册导入旧截图、轻点背面触发。
+
+非目标（当前不做）：锁屏状态下提问、实时连续共享屏幕、语音播报回答、Android 版本、自建服务端、iCloud 多设备同步、替用户操作其他 App；到店附近的地理围栏提醒、连按多次合并成一张多图卡片（M-D 讨论时决定暂缓）。
 
 参照产品：Grok Bot 已实现「Action Button → 不跳转 → 灵动岛自定义样式语音会话」，证明后台启动录音与自定义 Live Activity 的组合在 App Store 上可行。现有的收藏和稍后读工具依赖分享菜单和链接，在不能分享的地方（朋友圈、视频画面、App 内页面）无能为力。本项目的差异点是按键截屏收藏、语音附注、AI 自动整理，以及灵动岛内的文字转录和摘要回答。
 
@@ -73,7 +83,7 @@ agent 的定位：替用户「动手」整理，包括起标题、归类、打�
 
 **文件结构**
 
-下面标注了（M-Cx）的是收藏方向计划新增的文件，在对应里程碑里创建。
+下面标注了（M-Cx）、（M-Dx）的分别是收藏方向、收藏之后方向计划新增的文件，在对应里程碑里创建。
 
 ```
 IslandAsk/                           // 主 App target
@@ -91,6 +101,10 @@ IslandAsk/                           // 主 App target
 │   ├── SessionCoordinator.swift
 │   ├── SessionCoordinator+Cards.swift  // （M-C1）写卡片、灵动岛收藏 / 改为提问、批量操作、重新整理、旧会话补建卡片
 │   ├── SessionCoordinator+Links.swift  // （M-C2）分享链接建卡与整理、回前台补整理、导入 inbox
+│   ├── SessionCoordinator+Reminders.swift  // （M-D1）提醒的建议、设置、取消
+│   ├── SessionCoordinator+Synthesis.swift  // （M-D2）多张卡片交给 AI 整理
+│   ├── SessionCoordinator+Places.swift     // （M-D3）已读、地点定位、小组件快照刷新
+│   ├── SessionCoordinator+Import.swift     // （M-D5）相册截图导入与整理
 │   └── StreamingReply.swift         // 深度回答流式状态、后台任务封装
 ├── Agent/                           // （M-C4）
 │   ├── AgentTool.swift              // 工具协议与注册表
@@ -111,29 +125,49 @@ IslandAsk/                           // 主 App target
 │   ├── ShareInbox.swift             // （M-C2）App Group inbox 读写；同时属于 IslandAskShare target
 │   ├── ClipboardLinkDetector.swift  // （M-C2）剪贴板入口：检测剪贴板里是否有链接（不读内容）
 │   ├── CardSearch.swift             // （M-C3）本地搜索词、自然语言搜索的候选与结果解析、AI 搜索状态
-│   └── SpotlightIndexer.swift       // （M-C3）Core Spotlight 索引
+│   ├── SpotlightIndexer.swift       // （M-C3）Core Spotlight 索引
+│   ├── TextRecognizer.swift         // 截图文字识别（M4）；M-D4 起同时返回文字位置
+│   ├── KeyInfoActions.swift         // （M-D1）关键信息类型推断与可执行操作
+│   ├── ReminderScheduler.swift      // （M-D1）通知授权、提醒排程与取消
+│   ├── PlaceLocator.swift           // （M-D3）MapKit 地点搜索
+│   ├── WidgetSnapshotWriter.swift   // （M-D3）挑选重温卡片，写小组件快照和缩略图
+│   ├── SensitiveMasker.swift        // （M-D4）敏感信息识别与打码
+│   ├── LocalOrganizer.swift         // （M-D4）本机模型整理（Foundation Models）
+│   ├── CardExporter.swift           // （M-D4）导出 Markdown / JSON / zip
+│   ├── AppLock.swift                // （M-D4）App 锁状态与验证
+│   └── ScreenshotImporter.swift     // （M-D5）读取相册图片、截屏时间、哈希
 ├── Shared/                          // 两个 target 共享（在 pbxproj 里逐个文件登记）
 │   ├── AskActivityAttributes.swift  // 含深链 URL 辅助函数
 │   ├── StopAskIntent.swift
 │   ├── DismissAskIntent.swift
+│   ├── CopyAnswerIntent.swift       // 灵动岛「复制」
 │   ├── SaveCardIntent.swift         // （M-C1）灵动岛「收藏」
-│   └── SwitchToAskIntent.swift      // （M-C1）灵动岛「改为提问」
+│   ├── SwitchToAskIntent.swift      // （M-C1）灵动岛「改为提问」
+│   ├── SetReminderIntent.swift      // （M-D1）灵动岛「提醒我」
+│   └── WidgetSnapshot.swift         // （M-D3）小组件快照的结构和文件路径
 ├── Data/
 │   ├── Models.swift                 // AskSession, ChatMessage, Card（M-C1）
 │   └── AppDatabase.swift            // 共享 ModelContainer（App Group）
 └── UI/
     ├── OnboardingView.swift
     ├── LibraryView.swift            // （M-C1）收藏库，替换原 HistoryView.swift（含 ScreenshotThumbnail）
-    ├── ClipboardLinkBanner.swift    // （M-C2）收藏库顶部的剪贴板提示条
+    ├── ClipboardLinkBanner.swift    // （M-C2）标题右边的粘贴收藏按钮和说明、粘贴后的结果提示
     ├── CardDetailView.swift         // （M-C1）卡片信息、编辑标题和标签、批量加标签；详情页本身复用会话页
     ├── SessionDetailView.swift
     ├── SettingsView.swift
+    ├── ShortcutGuideView.swift      // 快捷指令设置指引；M-D5 起加轻点背面
     ├── MarkdownText.swift           // 轻量 Markdown 块级渲染
-    └── ScreenshotViewer.swift       // 截图全屏缩放
+    ├── ScreenshotViewer.swift       // 截图全屏缩放；M-D4 起可显示打码后的版本
+    ├── CalendarEventEditor.swift    // （M-D1）EKEventEditViewController 的 SwiftUI 包装
+    ├── SynthesisSheet.swift         // （M-D2）选择整理方式
+    ├── PlaceMapView.swift           // （M-D3）地点卡片地图
+    ├── AppLockView.swift            // （M-D4）锁定遮罩
+    └── ImportProgressBanner.swift   // （M-D5）导入进度条
 
 IslandAskWidget/                     // Widget 扩展 target
 ├── IslandAskWidgetBundle.swift
-└── AskLiveActivity.swift            // 灵动岛 + 锁屏视图
+├── AskLiveActivity.swift            // 灵动岛 + 锁屏视图
+└── RevisitWidget.swift              // （M-D3）桌面小组件「今天重温」
 
 IslandAskShare/                      // （M-C2 阶段 2）Share Extension target
 └── ShareViewController.swift        // 只写 inbox，不调大模型、不写 SwiftData
@@ -181,9 +215,22 @@ IslandAskShare/                      // （M-C2 阶段 2）Share Extension targe
 - 快速档失败：会话照原流程转为 failed，卡片保留，organizeStatus = failed，可在收藏库里重新整理。
 - 第 11 步：深链 `islandask://session/<id>` 打开的是这张卡片的详情页（卡片 id 与会话 id 相同）。新增 `islandask://card/<id>`，供链接卡片和 Spotlight 使用。
 
+**收藏之后（M-D 起）**
+
+状态机和 Phase 仍然不变。调用顺序有以下变化：
+
+- 第 5 步（M-D4）：开启发送前打码时，截图 OCR 不受「识别截图文字」开关控制，录音一开始就并行运行（沿用现有做法），同时得到文字位置。
+- 第 9 步：
+  - 快速档 user 消息带上当前本地时间和星期，用来换算「周末」「明天」（M-D1）。
+  - 上传截图前先打码（M-D4，见 6.19）：等 OCR 完成，最多 5 秒；仍未完成时不上传，会话转为 failed，卡片 organizeStatus = failed。
+  - 不说话收藏、且开启了「收藏不上传截图」时，不调云端，改用本机整理（M-D4）。
+- 第 10 步：
+  - 写回新增的卡片字段：关键信息类型、活动时间、提醒建议（M-D1）。kind = collect 且有提醒建议时，Live Activity 带上 reminderText，展开态显示「提醒我」。
+  - 快速档因网络类错误失败、且本地已定为 collect（没说话）时，先试本机整理（M-D4）；成功则照常以 kind = collect 进入 answered，并标「本机整理」。
+
 ## 5. 工程配置
 
-最低系统版本定为 iOS 26，以便直接使用 SpeechAnalyzer；设备需为带 Action Button 和灵动岛的 iPhone（15 Pro 及以后）。
+最低系统版本定为 iOS 26，以便直接使用 SpeechAnalyzer；设备需为带 Action Button 和灵动岛的 iPhone（15 Pro 及以后）。轻点背面（M-D5）可能让有灵动岛、没有 Action Button 的 iPhone（14 Pro、15、15 Plus）也能使用，需真机验证；本机整理（M-D4）需要支持 Apple Intelligence 并已开启的设备。
 
 **Targets**
 
@@ -208,10 +255,15 @@ IslandAskShare/                      // （M-C2 阶段 2）Share Extension targe
 | `NSSupportsLiveActivities` | YES |
 | `NSSupportsLiveActivitiesFrequentUpdates` | YES |
 | `CFBundleURLTypes` | URL scheme `islandask`，用于灵动岛点击跳转 |
+| `NSLocationWhenInUseUsageDescription`（M-D3） | 用于在收藏地图上显示你的位置，并按距离排列附近的收藏 |
+| `NSFaceIDUsageDescription`（M-D4） | 用于打开 App 时验证身份 |
+| `NSPhotoLibraryUsageDescription`（M-D5，可选的删除原图） | 用于导入后删除相册里的原截图 |
 
-**共享文件**：`Shared/` 下的 `AskActivityAttributes.swift`、`StopAskIntent.swift`、`DismissAskIntent.swift` 必须同时加入两个 target 的 Target Membership（工程用文件夹同步，Shared 文件在 pbxproj 里逐个登记）。
+本地通知（M-D1）不需要 Info.plist 键，在 App 前台申请授权即可。
 
-**依赖**：只用系统框架（AppIntents、ActivityKit、WidgetKit、AVFoundation、Speech、SwiftData、Vision 可选；收藏方向新增 LinkPresentation（M-C2）、CoreSpotlight（M-C3）），不引入第三方库。网络请求用 URLSession。M-C4 的联网搜索调用第三方搜索服务的 HTTP API，不引入 SDK。
+**共享文件**：`Shared/` 下的 `AskActivityAttributes.swift`、`StopAskIntent.swift`、`DismissAskIntent.swift` 必须同时加入两个 target 的 Target Membership（工程用文件夹同步，Shared 文件在 pbxproj 里逐个登记）。M-D 系列新增的 `SetReminderIntent.swift`（M-D1）、`WidgetSnapshot.swift`（M-D3）同样要加入 widget target；M-D3 的小组件要读 App Group，`Config/AppGroup.swift` 也要加入 widget target。
+
+**依赖**：只用系统框架（AppIntents、ActivityKit、WidgetKit、AVFoundation、Speech、SwiftData、Vision 可选；收藏方向新增 LinkPresentation（M-C2）、CoreSpotlight（M-C3）），不引入第三方库。网络请求用 URLSession。M-C4 的联网搜索调用第三方搜索服务的 HTTP API，不引入 SDK。收藏之后方向新增 EventKitUI、UserNotifications（M-D1），MapKit、CoreLocation（M-D3），FoundationModels、LocalAuthentication（M-D4），PhotosUI、Photos、CryptoKit（M-D5），都是系统框架。
 
 ## 6. 模块详细设计
 
@@ -226,6 +278,7 @@ IslandAskShare/                      // （M-C2 阶段 2）Share Extension targe
 3. 下载转录模型：用 `AssetInventory` 检查 zh-CN 的 SpeechTranscriber 资源，未安装则在前台下载并显示进度。
 4. 检查 Live Activity 是否被用户关闭：`ActivityAuthorizationInfo().areActivitiesEnabled`。
 5. 显示快捷指令和 Action Button 的设置图文指引（见 6.12）。
+6. （M-D1）申请通知权限，用于收藏提醒。这一步可以跳过，不影响使用；跳过的用户在 App 里第一次设置提醒时再申请。
 
 ### 6.2 提问 Intent（AskAboutScreenIntent）
 
@@ -313,6 +366,24 @@ struct StopAskIntent: LiveActivityIntent {
     func saveClipboardText(_ text: String) async -> SaveClipboardResult   // 剪贴板提示条的「收藏」；同链接已有卡片时不新建
     // M-C3 起
     func askAboutCard(cardID: UUID, text: String) async throws  // 卡片详情底部提问；没有会话的卡片先建同 id 会话
+    // M-D1 起
+    func setReminder(cardID: UUID, at date: Date) async throws  // 设置或修改提醒；未收藏的卡片同时收藏
+    func setSuggestedReminder(sessionID: String) async          // SetReminderIntent：按卡片里的建议时间设置
+    func cancelReminder(cardID: UUID)                           // 取消提醒，同时移除待发通知
+    func dismissReminderSuggestion(cardID: UUID)                // 建议条上的「✕」
+    // M-D2 起
+    func synthesizeCards(ids: [UUID], mode: SynthesisMode, question: String?) throws -> UUID  // 新建 AI 整理卡片，返回卡片 id；深度回答在详情页自动开始
+    // M-D3 起
+    func markRead(cardIDs: [UUID], _ read: Bool)
+    func locatePendingPlaces() async                            // 回前台时为地点卡片补定位，每次最多 20 张
+    func setPlace(cardID: UUID, candidate: PlaceCandidate)      // 手动修正位置
+    func refreshWidgetSnapshot()                                // 防抖重写小组件快照并刷新时间线
+    // M-D4 起
+    func organizeLocally(cardID: UUID) async -> Bool            // 本机整理：网络失败兜底、隐私模式
+    // M-D5 起
+    func importScreenshots(_ items: [ImportedScreenshot]) async -> ImportScreenshotsResult  // 只建卡，返回新建数和跳过的重复数
+    func organizePendingImports() async                         // 前台按并发 2 整理导入的卡片，回前台时继续
+    func pauseImport()
 }
 ```
 
@@ -358,6 +429,7 @@ struct StopAskIntent: LiveActivityIntent {
 - 原图保存到 App Group 容器：`sessions/<sessionID>.png`（录音 `sessions/<sessionID>.m4a` 同目录）。数据库里只存相对容器的路径。
 - 发送给大模型前：长边缩放到 1536 px，转 JPEG（质量 0.75），再转 base64。
 - 可选增强（M4）：用 Vision 的文字识别提取截图文字，作为补充上下文一起发送，提高中文小字的识别准确率。
+- 打码（M-D4）：缩放、转 JPEG 之后，转 base64 之前，按卡片的打码区域盖住敏感信息，见 6.19。本机保存的原图不改。
 
 ### 6.9 大模型调用（LLMClient）
 
@@ -370,10 +442,12 @@ struct LLMAnswer: Codable {
 }
 struct CardFields: Codable {     // 全部可选，模型漏字段时不报格式错误
     var title: String?; var type: String?; var tags: [String]?
-    var keyInfo: [KeyInfo]?      // [{label, value}]
+    var keyInfo: [KeyInfo]?      // [{label, value, kind}]；kind 为 M-D1 新增
     var note: String?            // 用户话里除收藏指令之外的附注
     var sourcePlatform: String?; var sourceTitle: String?
     var translation: String?
+    var eventStart: String?; var eventEnd: String?   // M-D1：ISO 8601 本地时间，或只有日期
+    var remindAt: String?        // M-D1：ISO 8601 本地时间，只来自用户说的话
 }
 enum LLMStreamEvent: Sendable { case reasoning(String), content(String) }
 
@@ -434,6 +508,21 @@ card.translation：截图主要内容不是中文时，给出中文翻译，最�
 - 截图主要是外文长文时，输出最长，最容易触发 `finish_reason = length` 或超时。日志里要记录 completion_tokens，M-C1 真机测试时重点观察。
 - 用户话为空（本地已定为 collect）时，question 传空字符串，提示词按 collect 处理。
 
+**快速档追加字段（M-D1）**
+
+- user 消息开头加一行当前本地时间，如「现在是 2026-11-07 星期六 15:20」。链接整理（`organizeLink`）同样追加下面的字段和当前时间。
+- JSON 示例里 key_info 的每条加 `"kind": "address"`，card 里加 `"event_start": null, "event_end": null, "remind_at": null`。
+- 系统提示词追加：
+
+```
+key_info 每条加 kind：address / datetime / phone / url / code / price / other 之一。code 指取件码、快递单号、优惠码、预约号这类需要复制的编码。
+card.event_start / card.event_end：截图内容里明确的活动、演出、展览、预约或截止时间，用 ISO 8601 本地时间（如 "2026-11-15T19:30"）；只有日期时只写日期（如 "2026-11-15"）；只有一个时间点时 event_end 为 null；没有或看不清时都为 null。「周六」「明天」等相对说法按用户给出的当前时间换算。
+card.remind_at：只看用户说的话，不要根据截图内容推测。用户明确表示以后要去、要做或要看（如「周末去」「明天提醒我」「下周看」）时给出提醒时间，用 ISO 8601 本地时间；只说了日期没说时刻时用 10:00；「周末」指最近的周六；用户没提时间或时间已经过去时为 null。
+```
+
+- 解析：不带时区的时间按设备当前时区理解；解析失败的字段丢掉；remind_at 早于当前时间时丢掉；event_end 早于 event_start 时丢掉 event_end；kind 不在列表里按缺失处理（在本地推断，见 6.16）。
+- 日志记录转录文字、当前时间和返回的 remind_at，方便核对换算。
+
 **深度档**
 
 - `stream: true`（SSE），`stream_options: {include_usage: true}`（最后一个 chunk 带 token 用量），`thinking: enabled`，`reasoning_effort: high`，不用 JSON 模式，不设 `max_tokens`。
@@ -474,6 +563,28 @@ card.translation：截图主要内容不是中文时，给出中文翻译，最�
 
 - 解析：序号可以是数字或数字字符串；越界、重复的丢掉，最多 10 个。
 
+**多张卡片整理（M-D2）**
+
+- 用深度档（开思考、流式），不带截图，来源卡片的信息挂在第一条 user 消息上（拼法见 6.17）。
+- 系统提示词：
+
+```
+你是收藏整理助手。用户从自己的收藏里选了几张卡片，第一条消息里按「卡片 1、卡片 2……」列出每张卡片的信息：标题、类型、收藏时间、来源、标签、摘要、附注、关键信息、截图文字。
+按用户的要求整理这些内容。只用卡片里有的信息；卡片里没有的具体事实（营业时间、价格、地址等）不要编造，需要时提醒用户核实。引用某张卡片的内容时，在句末标注（卡片 N）。
+第一行输出「# 标题」，标题不超过 20 个汉字，之后直接输出正文。使用 Markdown，不要输出 JSON，不要寒暄。
+```
+
+**本机整理（M-D4）**
+
+- 不走 `LLMProvider`，由 `LocalOrganizer` 调用 Foundation Models，输出标题、类型、标签、摘要、关键信息。用 guided generation 直接生成结构体，不解析 JSON（需核对官方文档）。
+- 指令：
+
+```
+你是收藏整理员。下面是一张手机截图里识别出的文字（可能有错字，顺序也可能是乱的），以及用户说的话（可能为空）。请为这张截图写一张收藏卡片：标题不超过 20 个汉字，概括内容本身；类型从 article / product / place / event / recipe / knowledge / media / chat / other 中选一个；1–4 个中文短标签；2–3 句摘要；最多 6 条关键信息（如店名、地址、价格、时间）。不要编造文字里没有的信息。
+```
+
+- 字段的截断和校验同快速档。
+
 ### 6.10 Live Activity（AskActivityAttributes + AskLiveActivity）
 
 ```swift
@@ -490,6 +601,11 @@ struct AskActivityAttributes: ActivityAttributes {
         var cardTitle: String?       // collect 时的卡片标题，最多 20 字
         var isSaved: Bool?           // ask 回答后是否已点「收藏」
         var canSwitchToAsk: Bool?    // 转录文字不为空时为 true，控制「改为提问」按钮
+        // M-D1 / M-D4 新增，全部可选
+        var reminderText: String?    // collect 时的提醒建议，如「周六 10:00」；nil 时不显示「提醒我」
+        var reminderSet: Bool?       // 点过「提醒我」后为 true
+        var maskedCount: Int?        // 发给模型的截图打码处数
+        var organizedLocally: Bool?  // 本机整理的收藏
     }
     var sessionID: String
 }
@@ -506,8 +622,10 @@ struct AskActivityAttributes: ActivityAttributes {
 | thinking（M-C1，不说话收藏） | 截图缩略图标 / 加载动画 | 加载动画 | 「整理中…」 |
 | answered（M-C1，kind = ask） | 同上方 answered | 同上方 answered | 同上方 answered，另加「收藏」按钮（SaveCardIntent），已收藏后显示为不可点的「已收藏」 |
 | answered（M-C1，kind = collect） | 书签图标 / 对勾 | 书签图标 | 「已收藏」+ 卡片标题一行 + summary 最多 2 行；「改为提问」按钮（SwitchToAskIntent，canSwitchToAsk 为 true 时才显示）+ 右上角关闭按钮 |
+| answered（M-D1，kind = collect，有提醒建议） | 同 collect | 同 collect | 在 collect 布局上加「提醒我 周六 10:00」按钮（SetReminderIntent），通知已授权时才显示；点后变为不可点的「已设提醒」 |
+| thinking / answered（M-D4） | 不变 | 不变 | maskedCount > 0 时底部一行小字「已打码 N 处」；organizedLocally 为 true 时标题旁显示「本机整理」 |
 
-answered 展开态的按钮（含关闭和现有的复制按钮）合计不超过 3 个，避免挤占文字区域。
+answered 展开态的按钮（含关闭和现有的复制按钮，以及 M-D1 的「提醒我」）合计不超过 3 个，避免挤占文字区域。
 
 listening 布局按 M1 真机反馈调整，原因：
 
@@ -559,14 +677,14 @@ listening 布局按 M1 真机反馈调整，原因：
 @Model final class Card {
     @Attribute(.unique) var id: UUID   // 按键产生的卡片与 AskSession 同 id
     var createdAt: Date
-    var origin: String                 // press（按键）/ share（分享，M-C2）
+    var origin: String                 // press（按键）/ share（分享，M-C2）/ synthesis（AI 整理，M-D2）/ import（相册导入，M-D5）
     var isSaved: Bool?                 // nil 按 false：提问产生的卡片默认不进收藏
     var organizeStatus: String?        // pending / done / failed
     var intent: String?                // ask / collect / both；nil 按 ask。详情页据此显示问答或内容摘要
     var title: String?; var summary: String?
     var cardType: String?              // 与 CardFields.type 相同的取值
     var tags: [String]?
-    var keyInfoData: Data?             // [{label, value}] 的 JSON
+    var keyInfoData: Data?             // [{label, value, kind}] 的 JSON（kind 为 M-D1 新增）
     var note: String?                  // 收藏时的语音附注，或分享时填写的文字
     var translation: String?
     var screenshotPath: String?        // 与 AskSession 指向同一个文件
@@ -578,6 +696,25 @@ listening 布局按 M1 真机反馈调整，原因：
     var iconPath: String?              // （M-C2 补充）网站图标：sessions/<id>-icon.png
     var linkImagesFetchedAt: Date?     // （M-C2 补充）取过图片的时间，取到没取到都记
     var linkBlocked: Bool?             // （M-C2 补充）网站拦截读取或什么都没抓到，详情页提示改用按键截屏
+    // M-D1
+    var eventStart: Date?; var eventEnd: Date?
+    var eventAllDay: Bool?             // 只有日期、没有时刻
+    var remindAt: Date?                // 提醒时间（建议的或已设置的）
+    var reminderState: String?         // suggested / scheduled / dismissed
+    // M-D2
+    var sourceCardIDsData: Data?       // AI 整理卡片的来源卡片 id（[UUID] 的 JSON）
+    var synthesisMode: String?         // route / compare / digest / custom
+    // M-D3
+    var readAt: Date?                  // 看过的时间；nil 为没看过
+    var latitude: Double?; var longitude: Double?
+    var placeName: String?             // 地图搜索得到的地点名称
+    var placeStatus: String?           // pending / done / uncertain / failed / manual
+    // M-D4
+    var maskRegionsData: Data?         // 打码区域 [{category, x, y, width, height}]（归一化坐标）的 JSON
+    var organizer: String?             // cloud / local；nil 按 cloud
+    // M-D5
+    var importedAssetID: String?       // 相册照片的 localIdentifier，用于去重
+    var imageHash: String?             // 截图数据的 SHA-256，用于去重
     @Relationship(deleteRule: .cascade, inverse: \AskSession.card)
     var session: AskSession?           // 分享得到的卡片在用户提问前为 nil
 }
@@ -589,6 +726,8 @@ listening 布局按 M1 真机反馈调整，原因：
 - 设置里的保留天数只清理未收藏的卡片（连同会话、截图、录音），收藏的卡片永不过期。
 - 会话转为 failed 时，卡片 organizeStatus 同时记为 failed。
 - 卡片的创建、整理、编辑、删除同样只经 `SessionCoordinator`。
+- （M-D1）删除卡片（含过期清理）时，同时移除它的待发提醒通知。
+- （M-D3）升级时为已有卡片一次性补 readAt = createdAt，避免老卡片全部变成「没看过」。
 
 ### 6.12 App 界面
 
@@ -640,6 +779,16 @@ listening 布局按 M1 真机反馈调整，原因：
 - 批量操作全部经 `SessionCoordinator`，一次操作只保存一次数据库。
 - 重新整理：用快速档、同一张截图和转录文字重跑，不更新灵动岛。
 
+**收藏之后的界面变化（M-D 系列）**
+
+| 页面 | 内容 |
+| --- | --- |
+| 首次引导 | （M-D1）新增可跳过的「通知」一步，用于收藏提醒。（M-D5）快捷指令指引里，Action Button 一步之后加「轻点背面」 |
+| 收藏库 | （M-D1）顶部「即将开始」一行；已结束的活动灰显、标「已结束」；设了提醒的卡片显示铃铛和时间。（M-D3）筛选行加「没看过」，没看过的卡片标题前显示小圆点；类型筛选为「地点」时右上角可以切换「列表 / 地图」。（M-D5）右上角菜单加「从相册导入截图」，导入中顶部显示进度条 |
+| 多选工具栏 | 收藏 / 取消收藏、加标签、（M-D2）AI 整理、删除；（M-D3 起）「更多」：标为已读 / 未读，（M-D4）导出 |
+| 卡片详情 | （M-D1）关键信息每行行尾有操作按钮，长按复制；有活动时间时显示时间行和「加到日历」；有提醒建议时顶部显示建议条；「更多」菜单加「提醒我…」。（M-D2）AI 整理的卡片显示「来自 N 张卡片」。（M-D3）地点卡片显示小地图、「在地图中打开」、「位置不对？」；停留 3 秒标为已读。（M-D4）「发送时已打码 N 处」，可以查看打码后的版本；本机整理的卡片标「本机整理」，可以用云端重新整理 |
+| 设置 | （M-D4）新增「隐私」分组：发送前打码及各类别、不说话收藏时不上传截图、本机整理兜底、App 锁和锁定时机、在系统搜索中显示、导出收藏。权限与环境状态加通知（M-D1）、定位（M-D3）、本机模型（M-D4） |
+
 ### 6.13 链接收藏（M-C2）
 
 **阶段 1：快捷指令共享表单**（不新建 target，用来先验证）
@@ -690,10 +839,13 @@ struct SaveLinkIntent: AppIntent {
 
 **剪贴板入口**（小红书、微信的分享面板不调起系统分享菜单，Share Extension 和共享表单都用不了）
 
-- 用户在这些 App 里点「复制链接」，回到本 App。收藏库最上方显示提示条「剪贴板里有链接」，带系统 `PasteButton`「收藏」和「✕」。
-- 检测只用 `UIPasteboard.detectedPatterns(for: [\.probableWebURL])`，不读剪贴板内容（读内容会弹「是否允许粘贴」）；所以收藏前提示条不显示是哪个链接。`PasteButton` 由系统粘贴，不弹框。
-- 收藏、点「✕」过的剪贴板（按 `changeCount` 记）不再提示，内容变了才再出现；本 App 在前台时自己复制造成的变化直接记为已处理。
-- 同一个链接已有卡片时不新建，提示条显示「这个链接已收藏过」，可以点开那张卡片（剪贴板入口最容易重复；分享入口仍不去重）。
+- 用户在这些 App 里点「复制链接」，回到本 App，点收藏库标题「IslandAsk」右边的系统 `PasteButton`（「粘贴」）收藏。按钮一直显示（多选时除外），左边两行小字说明用法：检测到链接时为主题色「剪贴板有链接 / 收藏链接」，否则为灰色「点击粘贴 / 收藏链接」；字号调大、放不下时不显示说明，标题优先完整显示；剪贴板为空时由系统置灰。（M-C3 后调整：原来是收藏库最上方的提示条「剪贴板里有链接」+「✕」，占空间。）
+  - 标题和按钮是收藏库列表的第一行，不用系统大标题；滚出屏幕后顶栏中间显示小标题。放在系统大标题位置（`ToolbarItemPlacement.largeTitle`）的按钮在列表有内容时点不到（模拟器实测）。
+  - `PasteButton` 固定用主题色：系统会校验它的外观，换成灰色这类低对比度的 tint 后，点击可能被静默拒绝。
+- 检测只用 `UIPasteboard.detectedPatterns(for: [\.probableWebURL])`，不读剪贴板内容（读内容会弹「是否允许粘贴」）；所以收藏前显示不了是哪个链接。`PasteButton` 由系统粘贴，不弹框。没检测到链接时按钮也能点，粘贴出来没有链接就提示「没有找到链接」。
+- 收藏过的剪贴板（按 `changeCount` 记）不再高亮，内容变了才再高亮；本 App 在前台时自己复制造成的变化直接记为已处理。
+- 粘贴后收藏库顶部短暂显示结果：收藏中、已收藏：<标题>、这个链接已收藏过（可以点开那张卡片）、没有找到链接，几秒后自动收起。
+- 同一个链接已有卡片时不新建，提示「这个链接已收藏过」，可以点开那张卡片（剪贴板入口最容易重复；分享入口仍不去重）。
 - 建卡后立即返回，整理按前台规则（元数据 8 秒、可重试）。
 - 所有入口的分享文字都去掉已知的宣传语和口令（目前覆盖小红书：「复制本条信息，打开【小红书】App查看精彩内容！」「| 小红书 - 你的生活指南」、表情包住的口令），附注和发给模型的都是干净的内容；认不出的文字原样保留。
 
@@ -731,6 +883,195 @@ struct SaveLinkIntent: AppIntent {
 - 需要核对官方文档：DeepSeek 思考模式下带 tools 时，工具循环内是否必须回传 `reasoning_content`；JSON 模式能否与 tools 同时使用。
 - 日志新增 category `agent`：记录每轮工具调用的名称、参数摘要、耗时和结果长度。
 
+### 6.16 收藏变行动（M-D1）
+
+**关键信息操作**
+
+- 快速档给每条 key_info 加 kind（提示词见 6.9）。旧卡片和模型没给 kind 的条目在本地推断，显示时计算，不调模型、不写库：
+  - 先看标签关键词：地址、位置 → address；电话、联系 → phone；时间、日期、营业 → datetime；单号、取件码、优惠码、券码、预约号 → code；价格、售价 → price。
+  - 再用 `NSDataDetector` 检测值里的电话、链接、日期、地址。它对中文地址的识别效果需要真机验证，以标签关键词为主。
+- 每行行尾一个操作按钮，长按整行复制：
+
+| kind | 操作 |
+| --- | --- |
+| address | 在地图中打开：已定位（M-D3）时用坐标和地点名打开 `MKMapItem`；否则用「标题 + 地址」作为搜索词打开 Apple 地图 |
+| datetime | 加到日历（见下） |
+| phone | 拨打（`tel:`） |
+| url | 用 Safari 打开 |
+| code | 复制，按钮做成显眼的「复制」 |
+| price / other | 只有长按复制 |
+
+- 只打开系统的地图、电话和 Safari，不调用其他 App 的 URL scheme。
+
+**加到日历**
+
+- 用 EventKitUI 的 `EKEventEditViewController` 弹出系统编辑面板，预填：
+  - 标题：卡片标题。
+  - 时间：eventStart / eventEnd；没有时用 datetime 关键信息里 `NSDataDetector` 解析出的时间；仍没有就不预填。全天取 eventAllDay。
+  - 地点：第一条 address 关键信息。
+  - 备注：摘要和来源链接；URL：`islandask://card/<id>`。
+- iOS 17 起，只弹编辑面板、由用户保存时不需要申请日历权限（需核对官方文档）。保存还是取消由用户在面板里决定，本 App 不读日历。
+
+**活动时间与过期**
+
+- 快速档返回 event_start / event_end（来自截图内容），写进卡片 eventStart / eventEnd；只有日期时 eventAllDay = true。
+- 结束时间 = eventEnd ?? eventStart，全天的取当天结束。过了结束时间的卡片在列表里灰显、标「已结束」，不删除，也不自动取消收藏。
+- 收藏库顶部「即将开始」：已收藏、7 天内开始或正在进行的卡片，按开始时间排，最多 3 张；有搜索词时不显示。
+- 旧卡片不补调模型，重新整理后才有活动时间。
+
+**提醒**
+
+- 快速档返回 remind_at：只来自用户说的话（「周末去」「明天提醒我」），不根据截图推测（提示词见 6.9）。写进卡片 remindAt，reminderState = suggested。
+- 模型只给建议，用户确认后才排通知：
+  - 灵动岛：collect 的 answered 展开态，通知已授权时显示「提醒我 周六 10:00」（`SetReminderIntent`），点后变为不可点的「已设提醒」。没授权时不显示这个按钮，建议留在 App 里。
+  - 卡片详情：顶部建议条「11 月 14 日周六 10:00 提醒你？」，按钮为「设置提醒」「改时间」「✕」。「更多」菜单里有「提醒我…」，可以选今晚 20:00、明天 9:00、本周六 10:00 或自定义时间。
+- 设置提醒后 reminderState = scheduled。未收藏的卡片同时收藏（isSaved = true），避免被保留天数清理掉。
+- 通知：用 `UNCalendarNotificationTrigger`，identifier 为 `card-<id>`；标题为卡片标题，正文为附注（没有附注时用摘要首句）；点通知打开 `islandask://card/<id>`。改时间时替换；取消提醒、删除卡片（含过期清理）时移除待发通知。
+- 授权：首次引导里有可跳过的「通知」一步；跳过的用户在 App 里第一次点「设置提醒」时再申请；被拒绝时提示去系统设置打开。Intent 和灵动岛按钮里不申请。
+- 设了提醒、还没到时间的卡片在列表里显示铃铛和时间。
+- 日志 category `action`：地图、拨打、日历、提醒各操作的开始和结果，通知排程的成功或失败。
+
+### 6.17 多张卡片交给 AI 整理（M-D2）
+
+- 入口：收藏库多选工具栏「AI 整理」，选中 2–10 张时可用。弹出 `SynthesisSheet` 选择整理方式：
+
+| 方式 | mode | 默认选中的条件 | 发给模型的要求 |
+| --- | --- | --- | --- |
+| 排行程 | route | 选中的都是地点或活动 | 把这些地点和活动排成一份行程：按区域就近分组，给出建议顺序和大致时间；卡片里提到的营业时间、预约、截止时间等要写出来。 |
+| 做对比 | compare | 选中的都是商品 | 用 Markdown 表格对比这些选项，维度取卡片里都有的信息（如价格、规格、优缺点），最后给出选择建议。 |
+| 合成笔记 | digest | 其他情况 | 把这些内容合成一篇笔记：合并重复的要点，按主题分节。 |
+| 自由提问 | custom | — | 用户输入的问题 |
+
+- 结果存为一张新卡片：origin = synthesis，isSaved = true，organizeStatus = done，sourceCardIDsData 记来源卡片，synthesisMode 记方式。同时建同 id 的 `AskSession`（问题为方式名或用户的问题，status = answered，needsDeepAnswer = true，没有截图）。进入详情页后按现有逻辑自动开始深度回答。
+- 上下文：按选中顺序拼成「卡片 1」到「卡片 N」，每张用 `Card.askContext`（标题、类型、收藏时间、来源、标签、摘要、附注、关键信息）加 OCR 文字，每张最多 1500 字。不发截图：多张图太贵也太慢。系统提示词见 6.9。
+- 标题：模型第一行输出「# 标题」，生成完后取出作为卡片标题（超过 20 字截断），正文去掉这一行；没有时用「行程 · 5 张卡片」这样的默认标题。生成中列表显示「整理中…」。
+- 追问：同现有追问（深度档流式），每次都按 sourceCardIDsData 重新拼来源卡片的信息，因为卡片可能改过；已删除的来源卡片跳过。
+- 详情页顶部显示「来自 N 张卡片」，展开后列出来源卡片，点击进入，已删除的不显示。列表里这类卡片显示 sparkles 图标和「AI 整理 · N 张」。
+- 只在前台运行；切到后台时同深度回答，靠后台任务保活约 30 秒。
+- 和 M-C4「问问我的收藏」的区别：这里由用户自己选卡片，不调工具、不联网。
+
+### 6.18 重新浮现（M-D3）
+
+**没看过**
+
+- 卡片新增 readAt。适用范围：已收藏，且类型是 article / media，或者来自分享（origin = share）。这些卡片 readAt 为 nil 时算「没看过」。
+- 在详情页停留 3 秒或点开来源链接时，标为已读。长按菜单和多选「更多」里可以手动标为已读 / 未读。
+- 收藏库筛选行加「没看过」；没看过的卡片标题前显示小圆点。
+- 升级时补 readAt 的规则见 6.11。
+
+**地点卡片地图**
+
+- 范围：cardType = place 的卡片。
+- 定位：
+  - 搜索词为「标题 + 第一条 address 关键信息」，用 `MKLocalSearch` 搜索，取第一个结果，记下坐标和地点名，placeStatus = done。
+  - 没有地址、只有店名时只用标题搜索，结果记为 uncertain（显示「位置待确认」）。
+  - 搜不到记为 failed，不自动重试；网络类错误保持 pending，下次再试。
+- 时机：整理完成后记为 pending，回到前台时串行补定位，每次最多 20 张。Intent 后台链路里不定位，不拖慢按键后的响应。
+- 坐标只来自 MapKit，不和其他来源混用：国内 MapKit 的坐标自成一套，混用其他来源会偏移。
+- 入口：类型筛选选中「地点」时，右上角出现「列表 / 地图」切换，记住上次的选择；范围跟随「全部 / 收藏」分段。
+- 地图：
+  - 每张卡片一个标注（缩略图或类型图标），uncertain 的用灰色；点标注弹出卡片预览，再点进入详情。
+  - 卡片多时需要聚合，SwiftUI `Map` 不支持聚合时改用 `MKMapView` 包装（需核对官方文档）。
+  - 底部列表：授权定位后按距离排序，否则按收藏时间排序。
+- 定位权限：点地图上的定位按钮时才申请「使用 App 期间」，只用于显示自己的位置和按距离排序，不在后台定位。
+- 卡片详情：地点卡片显示小地图、「在地图中打开」和「位置不对？」。点「位置不对？」弹出可编辑的搜索框和结果列表，选中后 placeStatus = manual，之后重新整理也不覆盖手动选的位置。
+- 不做到店附近的地理围栏提醒（第 1 节非目标）。
+- 日志 category `place`：每次搜索的搜索词、结果数、耗时和状态。
+
+**桌面小组件「今天重温」**
+
+- 放在 IslandAskWidget target，支持小、中两种尺寸。小尺寸显示缩略图、标题和推荐理由，中尺寸另加摘要首句和标签。点击打开 `islandask://card/<id>`。
+- 小组件不读 SwiftData。主 App 的 `WidgetSnapshotWriter` 往 App Group 写 `widget/snapshot.json` 和缩略图 `widget/thumbs/<id>.jpg`（长边 400px），小组件只读这两样。
+- 快照里是之后 7 天每天显示的一张卡片（日期、卡片 id、标题、摘要首句、类型、推荐理由、缩略图路径）。每天按下面的顺序挑选：
+  1. 当天或之后 3 天内开始的活动（理由「即将开始」）；
+  2. 往年同一天前后 3 天收藏的卡片（「一年前的今天」，更早的写「N 年前的今天」）；
+  3. 没看过的卡片，最早的优先（「还没看」）；
+  4. 其余已收藏的卡片，以日期为种子随机（「重温」）。
+  - 已结束的活动不选；7 天内不重复。
+- 时间线：7 个条目，每天 0 点切换；用完后显示「打开 IslandAsk 看看」。
+- 更新：`AppDatabase.save` 之后防抖 5 秒重写快照，每次回到前台也重写一次，写完调用 `WidgetCenter.shared.reloadTimelines`。快照只由主 App 写。
+- 开启 App 锁（M-D4）时快照里不写卡片内容，小组件只显示「已锁定」。
+- 日志 category `widget`：快照写入的条目数、耗时和失败原因。
+
+### 6.19 隐私与数据（M-D4）
+
+**发送前打码**
+
+- 默认开启，设置页「隐私」里可以整体关闭，也可以按类别开关：
+
+| 类别 | 默认 | 识别规则 |
+| --- | --- | --- |
+| 验证码 | 开 | 同一行或上一行出现「验证码 / 校验码 / 动态码 / 确认码 / code / OTP」时，其中 4–8 位的数字 |
+| 银行卡号 | 开 | 13–19 位数字（允许空格分组），通过 Luhn 校验 |
+| 身份证号 | 开 | 18 位（末位可为 X），出生日期合法且校验位正确 |
+| 手机号 | 关 | 1 开头、第二位为 3–9 的 11 位数字（允许空格、横线）。默认关闭，因为商家电话是常用的关键信息（M-D1 的拨打） |
+
+- 识别基于截图 OCR：`TextRecognizer` 改为同时返回每行文字和位置，命中的子串用 Vision 的 `boundingBox(for:)` 取区域（需核对官方文档）。
+- 只给发出去的那一份打码：在压缩后的 JPEG 上用实心块盖住命中区域（四周略放大），OCR 文字里的命中处替换为「［已打码］」。本机保存的原图不改。
+- 打码区域（归一化坐标和类别）存进卡片 maskRegionsData。深度回答、追问、重新整理、AI 整理（M-D2，只用 OCR 文字）、相册导入（M-D5）都用同一份，不重复识别。
+- 时序：
+  - 打码开启时，OCR 不再受「识别截图文字」开关控制，录音一开始就并行运行；这个开关只决定 OCR 文字要不要发给模型。
+  - 快速档要等 OCR 完成才上传截图，从结束录音算起最多等 5 秒。仍未完成时不上传：会话转为 failed，卡片 organizeStatus = failed，提示「截图文字还没识别完，点开 App 重试」。App 内重新整理没有这个时限。
+- 灵动岛展开态在 thinking 和 answered 时显示一行小字「已打码 N 处」；卡片详情显示「发送时已打码 N 处」，点开可以查看打码后的版本。
+- 日志 category `privacy`：只记类别和处数，不记命中的内容。
+
+**本机整理**
+
+- 用 iOS 26 的 Foundation Models（`SystemLanguageModel`、`LanguageModelSession`，需核对官方文档）。只能处理文字：输入 OCR 文字（前 2000 字）和用户说的话，指令见 6.9。
+- 只用于截图收藏的整理，不用于回答问题。
+- 两个场景：
+  1. 兜底（默认开启）：快速档因网络类错误（断网、超时、5xx）失败，且本地已定为 collect（没说话）时，改用本机整理。成功则 organizeStatus = done、organizer = local，灵动岛照常显示「已收藏」，并标「本机整理」。
+  2. 隐私模式「收藏不上传截图」（默认关闭）：不说话收藏时不调云端，直接本机整理。说了话的照常走云端，因为要靠云端判断是提问还是收藏。相册导入（M-D5）也遵循这个开关。
+- Intent 后台能不能调用本机模型、要多久，需要真机验证。后台链路里本机整理最多 10 秒。后台用不了时：兜底场景保持原来的 failed；隐私模式下卡片保持 pending，回到前台再本机整理。
+- OCR 文字不到 10 个字时内容不够，不做本机整理，按原流程处理。
+- 设备不支持、没开 Apple Intelligence 或模型还没准备好（`availability`）时，设置页把这两项置灰并说明原因。
+- 卡片详情里，本机整理的卡片标「本机整理」，「重新整理」改为「用云端重新整理」。隐私模式下整理的卡片，确认框提示「会把截图（打码后）发给云端模型」。
+- 日志用 category `llm`，标明 provider = local。
+
+**导出**
+
+- 入口：设置 →「导出收藏」，范围为已收藏或全部；多选「更多」→「导出」，导出选中的卡片。
+- 格式：
+  - Markdown：一个 `.md` 文件，按收藏时间倒序，每张卡片写标题、时间、类型、标签、来源链接、摘要、附注、关键信息、翻译和问答（问题、回答、深度回答、追问）。
+  - JSON：一个 `.json` 文件，字段完整，带 `schemaVersion`，方便以后做导入。
+  - 「包含图片」开关：打开时打成 zip，内含上面的文件和 `images/<id>.png`（截图、封面图）。zip 用 `NSFileCoordinator` 的 `.forUploading` 读取目录生成（需核对官方文档）。
+- 在主线程之外生成，显示进度；完成后用系统分享面板（存到「文件」、隔空投送等），分享结束后删除临时文件。
+- 只读数据库，不写库。本里程碑不做从导出文件导入。
+- 日志 category `export`：卡片数、格式、文件大小、耗时、失败原因。
+
+**App 锁**
+
+- 设置：「打开 App 时验证」（默认关），锁定时机为「立即 / 1 分钟后 / 5 分钟后」，指离开 App 多久后回来需要验证。
+- 用 `LAContext` 的 `.deviceOwnerAuthentication`，Face ID 失败时可以用锁屏密码。打开和关闭这个设置都要先验证一次。
+- 锁定时整个界面被遮罩盖住。开启 App 锁后，App 进入多任务切换界面时也盖上遮罩，不露出卡片内容。
+- 从灵动岛、通知、Spotlight、小组件进来的深链先暂存（沿用 `AppState` 暂存深链的做法），解锁后再跳转。
+- 按键提问和收藏不受影响（Intent 不显示界面）。灵动岛和锁屏上的 Live Activity 仍然显示摘要，设置页说明这一点。
+- 开启 App 锁时，设置页提示「系统搜索仍能搜到卡片标题和缩略图」，旁边提供「在系统搜索中显示」开关：关闭时删除全部索引并停止同步，再打开时全量重建。小组件的处理见 6.18。
+- 日志 category `privacy`：验证成功、失败、取消。
+
+### 6.20 相册导入与轻点背面（M-D5）
+
+**导入相册截图**
+
+- 入口：收藏库右上角菜单「从相册导入截图」。用 `PhotosPicker`，筛选 `.screenshots`，一次最多 50 张；传 `photoLibrary: .shared()` 拿照片的 localIdentifier 用来去重，不需要相册权限（需核对官方文档）。
+- 选完先汇总：新截图张数、已导入过而跳过的张数，以及按最近收藏整理的平均 token 用量估算的花费（没有历史数据时不显示）。用户确认后开始。
+- 建卡：立即为每张建卡并保存截图（同 `ScreenshotStore` 的做法），origin = import，isSaved = true，intent = collect，organizeStatus = pending，readAt 记为导入时间（不进「没看过」）。
+  - createdAt 取图片元数据里的拍摄时间（需核对截图是否带这个字段），取不到时用导入时间。
+  - importedAssetID 和 imageHash（截图数据的 SHA-256，用 CryptoKit 计算）任一相同就跳过。
+- 整理：
+  - 只在前台进行，并发 2 张，走快速档的收藏整理（不带问题），遵循打码和隐私模式（M-D4）。
+  - 收藏库顶部显示进度条「正在整理 12 / 50」，可以暂停。
+  - 遇到 429 时停 10 秒并降为并发 1；连续 3 张失败就暂停，并提示原因。
+- 切到后台：在途的请求靠后台任务跑完，不再开始新的；剩下的保持 pending，下次回到前台继续。错误分类同分享卡片：网络类保持 pending，其他记为 failed。
+- 导入的卡片没有会话；在详情里提问同 M-C3 的「对卡片提问」，带上截图。
+- 删除相册原图（可选）：全部整理完后，进度条处提供「删除相册里的 N 张原图」，只包括整理成功的。点击时才申请相册读写权限，用 `PHAssetChangeRequest.deleteAssets` 删除；系统会弹确认框，照片进入「最近删除」。不授权就不删。
+- 日志 category `import`：选中数、跳过数、每张的整理结果和耗时、暂停原因。
+
+**轻点背面**
+
+- 快捷指令设置指引（6.12）在 Action Button 一步之后加一屏：设置 → 辅助功能 → 触控 → 轻点背面 → 轻点两下（或轻点三下）→ 选择「屏幕提问」。说明它可以和 Action Button 同时用，也适合 Action Button 已经设成别的功能的人。
+- 只改引导页，不需要其他代码。需要真机验证：轻点背面触发时，截屏、后台录音、灵动岛的表现和 Action Button 一致；有灵动岛但没有 Action Button 的机型（14 Pro、15、15 Plus）能否正常使用。
+
 ## 7. 开发里程碑
 
 按顺序推进，每个里程碑达到完成标准后再进入下一个；M0 不通过时，直接转到第 9 节的兜底路线 B。
@@ -765,6 +1106,24 @@ struct SaveLinkIntent: AppIntent {
 9. **M-C4 Agent 工具调用（4–6 天）**
    - 内容：工具协议和注册表、前台工具调用循环、联网搜索、找回原链接、「问问我的收藏」。另外评估按 Action Button 时读取剪贴板里的链接挂到截图卡片上（M-C2 时决定推迟：每次按键可能弹「是否允许粘贴」，且剪贴板里可能是无关的旧链接；需要借助 guessed / confirmed 的确认界面）。
    - 完成标准：对需要最新信息的问题，深度回答会先搜索并给出来源；截图卡片点「找回原链接」能给出候选，确认后保存。
+
+「收藏之后」方向的里程碑（M-D 系列）在 M-C4 完成后开始（两者没有代码依赖，Nov 7 定为先做 M-C4），M-D 内部按顺序推进。打码（M-D4）排在相册导入（M-D5）之前，保证批量上传旧截图前已经有打码。
+
+10. **M-D1 收藏变行动（3–4 天）**
+    - 内容：快速档追加 key_info.kind、活动时间、提醒建议和当前时间；关键信息操作（地图、拨打、链接、复制）；加到日历；活动过期灰显和「即将开始」；提醒（建议条、灵动岛「提醒我」、本地通知、首次引导的通知一步）。
+    - 完成标准：收藏一张带地址和电话的店铺截图，详情里能一键在地图中打开、拨打；活动海报截图能加到日历，时间和地点已预填；说「这家店周末去，记一下」，灵动岛出现「提醒我 周六 10:00」，点后周六 10:00 收到通知，点通知进入这张卡片；过了时间的活动灰显，7 天内的活动出现在顶部。
+11. **M-D2 多张卡片 AI 整理（2 天）**
+    - 内容：多选「AI 整理」、四种整理方式、AI 整理卡片、来源卡片列表、追问。
+    - 完成标准：选 3 张探店卡片「排行程」，详情页流式生成行程，结果存为新卡片，标题由模型给出；可以追问；可以从结果跳回来源卡片。
+12. **M-D3 重新浮现（3–4 天）**
+    - 内容：没看过（readAt、筛选、升级补字段）；地点定位、地点地图、位置修正；桌面小组件「今天重温」和快照。
+    - 完成标准：分享收藏的文章出现在「没看过」里，看过后消失；地点卡片出现在地图上，点标注进入详情，位置不对时能手动修正；小组件每天换一张，点击进入对应卡片。
+13. **M-D4 隐私与数据（4–5 天）**
+    - 内容：发送前打码；本机整理兜底和「收藏不上传截图」；导出；App 锁。
+    - 完成标准：含验证码和银行卡号的截图，发给模型的版本已打码（详情里能查看），回答仍然正常；飞行模式下按键不说话，卡片由本机整理出标题和标签（后台不行时回到前台完成）；导出的 Markdown、JSON、zip 能在「文件」里打开；开启 App 锁后，从灵动岛点进来要先验证，验证后进入对应卡片。
+14. **M-D5 相册导入与轻点背面（2–3 天）**
+    - 内容：相册截图导入、去重、进度与暂停、可选删除原图；引导页加轻点背面。
+    - 完成标准：从相册选 30 张截图导入，进度可见，全部整理完成；再导入同样的截图会被跳过；卡片时间是截屏时间；轻点背面触发和 Action Button 行为一致。
 
 ## 8. 验收测试清单
 
@@ -810,7 +1169,25 @@ struct SaveLinkIntent: AppIntent {
 - [ ] 升级后旧会话全部补建为卡片，内容不丢
 - [ ] 删除卡片：截图、录音、会话一并删除，Spotlight 里也消失（M-C3）
 - [ ] 分享链接（M-C2）：Safari 走分享菜单，微信、小红书走「复制链接 → 回到 App 收藏」，各试一次，记录哪些能抓到标题和描述
-- [ ] 剪贴板入口（M-C2）：复制链接后回到 App 出现提示条；点「✕」或收藏后不再出现；同一链接再收藏提示「已收藏过」；附注里没有小红书宣传语
+- [ ] 剪贴板入口（M-C2）：复制链接后回到 App，标题右边的说明变成主题色「剪贴板有链接」，点「粘贴」能收藏；收藏后说明恢复灰色；同一链接再收藏提示「已收藏过」；附注里没有小红书宣传语
+
+**收藏之后（M-D 系列）**
+
+- [ ] 关键信息：地址在 Apple 地图里打开的是正确地点；电话能拨；取件码一键复制（M-D1）
+- [ ] 加到日历：不弹日历权限框，面板里时间、地点已预填（M-D1）
+- [ ] 提醒：「周末去」「明天提醒我」换算出的时间正确；没说时间时不出现建议；点通知进入对应卡片；删除卡片后通知不再出现（M-D1）
+- [ ] 通知未授权时灵动岛不显示「提醒我」；在 App 内点「设置提醒」时弹授权框（M-D1）
+- [ ] 活动：过了时间的灰显；「即将开始」只显示 7 天内的（M-D1）
+- [ ] AI 整理：生成中切到后台再回来，结果完整或可以重新生成；来源卡片删除后，整理卡片仍在（M-D2）
+- [ ] 没看过：升级后老卡片不会全部变成「没看过」（M-D3）
+- [ ] 地图：记录定位成功、待确认、失败的比例；手动修正后重新整理不覆盖（M-D3）
+- [ ] 小组件：跨天自动换卡；开启 App 锁后不显示内容（M-D3）
+- [ ] 打码：验证码、银行卡号、身份证号都被盖住；商家电话默认不打码；记录 OCR 耗时，看 5 秒上限是否够用（M-D4）
+- [ ] 本机整理：飞行模式下不说话收藏，记录后台能否跑完和耗时；不支持的设备上设置项置灰（M-D4）
+- [ ] 导出：200 张以上的卡片带图导出，记录耗时和文件大小（M-D4）
+- [ ] App 锁：进入多任务切换界面时不露出内容；Face ID 失败可以用密码（M-D4）
+- [ ] 导入：一次导入 50 张，记录总耗时和 token 用量；中途切到后台再回来能继续；遇到 429 能自动降速（M-D5）
+- [ ] 轻点背面：在 Safari、微信里触发，行为与 Action Button 一致（M-D5）
 
 ## 9. 风险与兜底方案
 
@@ -830,6 +1207,16 @@ struct SaveLinkIntent: AppIntent {
 | 「改为提问」在后台跑不完 | 日志看后台任务是否过期 | 转为 failed 并提示点开 App，App 内用快速档重问 |
 | 分享扩展内存超限被杀 | 扩展里不做图片处理和网络请求 | 只写 inbox，所有处理交给主 App |
 | 搜不到截图内容的原链接 | 记录 source_platform 和搜索结果 | 卡片保留来源平台和标题，不强行给链接；需要链接时提示用户改用分享入口 |
+| 不申请权限弹不出日历编辑面板（M-D1） | 核对 iOS 26 的 EventKitUI 文档；真机看是否弹授权框 | 申请「只写」日历权限（要在 Info.plist 加 `NSCalendarsWriteOnlyAccessUsageDescription`） |
+| 提醒时间换算错，如「周末」「下周」（M-D1） | 日志记录转录文字、当前时间和 remind_at | 只作为建议，确认前可以改时间；样例多时调整提示词 |
+| 地点搜不到或搜错（M-D3） | 日志记录搜索词和结果数 | 只有店名时标「位置待确认」；详情里手动修正 |
+| MapKit 搜索被限流（M-D3） | 日志看失败的错误码 | 串行、每次最多 20 张，剩下的下次回前台再做 |
+| 本机模型在后台不能用，或中文效果差（M-D4） | 检查 availability 和支持的语言；真机对比云端结果 | 只在前台做本机整理；效果差时只保留标题和标签 |
+| 打码误伤需要的信息，或漏打（M-D4） | 日志只记类别和处数；在真机上收集样例 | 类别开关；详情里可以查看打码版本；按样例调整规则 |
+| OCR 没在 5 秒内完成，截图不上传（M-D4） | 日志记录 OCR 耗时 | 调整等待上限；打码检测改用 Vision 的快速识别级别 |
+| 批量导入花费高，或被 429 限流（M-D5） | 日志记录 token 用量和错误码 | 导入前显示估算；并发 2、遇到 429 降速；可以暂停 |
+| 截图元数据里没有截屏时间（M-D5） | 真机检查导入图片的元数据 | 用导入时间 |
+| 轻点背面触发时后台录音失败（M-D5） | 对比两种触发方式的日志 | 引导里只把它作为备选入口，并注明已知问题 |
 
 路线 B 与主方案共用截图、大模型、Live Activity 回答这三部分，切换时只需替换录音和转录模块。
 

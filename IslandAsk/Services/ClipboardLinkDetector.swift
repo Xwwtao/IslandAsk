@@ -3,10 +3,11 @@
 //  IslandAsk
 //
 //  剪贴板收藏入口（M-C2，SPEC 第 6.13 节）：小红书、微信不调起系统分享菜单，用户在它们的面板里点「复制链接」，
-//  回到 IslandAsk 时收藏库顶部提示「剪贴板里有链接」，点系统的 PasteButton 收藏。
+//  回到 IslandAsk 后点大标题右边一直显示的系统 PasteButton 收藏；检测到链接时按钮高亮。
 //  - 只用 detectPatterns 判断「可能有网址」，不读剪贴板内容：读内容会弹「是否允许粘贴」。
-//    所以收藏之前提示条显示不了是哪个链接；PasteButton 由系统粘贴，也不弹框。
-//  - 收藏、关闭过的剪贴板（按 changeCount 记）不再提示，剪贴板内容变了才会再出现。
+//    所以收藏之前显示不了是哪个链接；PasteButton 由系统粘贴，也不弹框。
+//  - 收藏过的剪贴板（按 changeCount 记）不再高亮，剪贴板内容变了才会再高亮。
+//  - 没检测到链接时按钮也能点：粘贴出来没有链接就提示「没有找到链接」（检测可能漏掉小红书口令里的短链）。
 //  - 本 App 自己复制（「复制摘要」「复制链接」）造成的变化直接记为已处理，不提示收藏自己的内容。
 //  只是界面状态，不写 SwiftData；建卡经 SessionCoordinator.saveClipboardText。日志 category：link。
 //
@@ -29,7 +30,7 @@ final class ClipboardLinkDetector {
 
     enum State: Equatable {
         case hidden
-        /// 剪贴板里可能有网址，等用户点「收藏」。
+        /// 剪贴板里可能有网址：粘贴按钮高亮。
         case available(changeCount: Int)
         case saving
         case saved(title: String)
@@ -40,6 +41,20 @@ final class ClipboardLinkDetector {
     }
 
     private(set) var state: State = .hidden
+
+    /// 检测到剪贴板里可能有链接（粘贴按钮高亮）。
+    var hasLink: Bool {
+        if case .available = state { return true }
+        return false
+    }
+
+    /// 正在收藏或正在显示结果：收藏库顶部显示结果提示，粘贴按钮暂不可用。
+    var isShowingResult: Bool {
+        switch state {
+        case .saving, .saved, .duplicate, .noLink: return true
+        case .hidden, .available: return false
+        }
+    }
 
     /// 结果提示（已收藏 / 已收藏过 / 没有链接）显示多久后自动收起。
     private static let resultDisplayDuration: Duration = .seconds(2)
@@ -109,19 +124,10 @@ final class ClipboardLinkDetector {
 
     // MARK: - 动作
 
-    /// 点「✕」：这次剪贴板内容不再提示。
-    func dismiss() {
-        if case .available(let changeCount) = state {
-            AppSettings.lastHandledClipboardChangeCount = changeCount
-            logger.info("clipboard banner dismissed changeCount=\(changeCount, privacy: .public)")
-        }
-        dismissTask?.cancel()
-        state = .hidden
-    }
-
-    /// PasteButton 粘贴出来的内容。
+    /// PasteButton 粘贴出来的内容。没检测到链接时也接受（按钮一直可点）。
     func handlePaste(_ strings: [String]) {
-        guard case .available(let changeCount) = state else { return }
+        guard !isShowingResult else { return }
+        let changeCount = UIPasteboard.general.changeCount
         AppSettings.lastHandledClipboardChangeCount = changeCount
         let text = strings
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -139,7 +145,7 @@ final class ClipboardLinkDetector {
             case .noLink:
                 show(.noLink, for: Self.resultDisplayDuration)
             case .saveFailed:
-                // 没存上：回到可收藏状态，让用户再点一次。
+                // 没存上：回到可收藏状态（按钮高亮），让用户再点一次。
                 AppSettings.lastHandledClipboardChangeCount = nil
                 state = .available(changeCount: changeCount)
             }
