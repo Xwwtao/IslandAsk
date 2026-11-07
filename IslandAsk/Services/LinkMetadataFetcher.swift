@@ -14,6 +14,7 @@
 //  日志 category：link。
 //
 
+import Darwin
 import Foundation
 import LinkPresentation
 import os
@@ -447,6 +448,8 @@ nonisolated enum LinkMetadataFetcher {
 // MARK: - 内网地址判断（安全）
 
 /// 判断主机名是不是内网 / 本机地址：IP 字面量在私有、回环、链路本地、CGNAT 等网段，或 localhost、.local 这类本地名字。
+/// IP 用系统的 inet_aton / inet_pton 解析，和网络栈连接时的解释一致：127.1、0177.0.0.1、0x7f.1、2130706433、
+/// 0:0:0:0:0:0:0:1、::ffff:7f00:1 这类写法都按真实地址判断。看起来像 IP 但解析不了的一律当内网处理。
 /// 只看字面量，不做 DNS 解析（解析到内网的公网域名防不住，属于已知局限）。
 nonisolated enum NetworkAddressPolicy {
 
@@ -455,32 +458,52 @@ nonisolated enum NetworkAddressPolicy {
         if host.hasPrefix("["), host.hasSuffix("]") {
             host = String(host.dropFirst().dropLast())
         }
-        if host.hasSuffix(".") { host.removeLast() }
+        while host.hasSuffix(".") { host.removeLast() }
         guard !host.isEmpty else { return true }
         if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local")
             || host.hasSuffix(".internal") || host.hasSuffix(".lan") || host.hasSuffix(".home.arpa") {
             return true
         }
-        if let octets = ipv4Octets(host) {
-            return isPrivateIPv4(octets)
-        }
         if host.contains(":") {
-            return isPrivateIPv6(host)
+            // IPv6（可能带 %zone）。解析不了的当内网。
+            let address = host.split(separator: "%", maxSplits: 1).first.map(String.init) ?? host
+            guard let bytes = ipv6Bytes(address) else { return true }
+            return isPrivateIPv6(bytes)
+        }
+        if looksLikeIPv4Literal(host) {
+            guard let value = ipv4Value(host) else { return true }
+            return isPrivateIPv4(value)
         }
         // 不带点的单段名字（如 router）会按局域网搜索域解析。
         return !host.contains(".")
     }
 
-    private static func ipv4Octets(_ host: String) -> [Int]? {
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4 else { return nil }
-        let octets = parts.compactMap { Int($0) }
-        guard octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else { return nil }
-        return octets
+    /// 只由数字、点和十六进制写法（0x、a–f）组成，且每段以数字开头：系统可能把它当 IP 解析。
+    /// 每段以数字开头才算，避免把 cafe.com 这类域名误当成 IP。
+    private static func looksLikeIPv4Literal(_ host: String) -> Bool {
+        let allowed = Set("0123456789abcdefx.")
+        guard host.allSatisfy({ allowed.contains($0) }) else { return false }
+        return host.split(separator: ".", omittingEmptySubsequences: false).allSatisfy { part in
+            part.first.map { $0.isNumber } ?? false
+        }
     }
 
-    private static func isPrivateIPv4(_ o: [Int]) -> Bool {
-        switch (o[0], o[1]) {
+    /// inet_aton：接受点分十进制、八进制、十六进制以及 1–4 段的简写，和系统解析一致。返回主机字节序。
+    private static func ipv4Value(_ host: String) -> UInt32? {
+        var address = in_addr()
+        guard host.withCString({ inet_aton($0, &address) }) == 1 else { return nil }
+        return UInt32(bigEndian: address.s_addr)
+    }
+
+    private static func ipv6Bytes(_ host: String) -> [UInt8]? {
+        var address = in6_addr()
+        guard host.withCString({ inet_pton(AF_INET6, $0, &address) }) == 1 else { return nil }
+        return withUnsafeBytes(of: &address) { Array($0) }
+    }
+
+    private static func isPrivateIPv4(_ value: UInt32) -> Bool {
+        let a = UInt8(value >> 24), b = UInt8((value >> 16) & 0xff)
+        switch (a, b) {
         case (0, _), (10, _), (127, _): return true
         case (169, 254): return true
         case (172, 16...31): return true
@@ -492,18 +515,25 @@ nonisolated enum NetworkAddressPolicy {
         }
     }
 
-    private static func isPrivateIPv6(_ host: String) -> Bool {
-        let address = host.split(separator: "%").first.map(String.init) ?? host   // 去掉 zone id
-        if address == "::" || address == "::1" { return true }
-        if address.hasPrefix("fe8") || address.hasPrefix("fe9") || address.hasPrefix("fea") || address.hasPrefix("feb") {
-            return true                             // fe80::/10 链路本地
+    private static func isPrivateIPv6(_ b: [UInt8]) -> Bool {
+        guard b.count == 16 else { return true }
+        let embeddedIPv4 = UInt32(b[12]) << 24 | UInt32(b[13]) << 16 | UInt32(b[14]) << 8 | UInt32(b[15])
+        // ::/96（含 :: 和 ::1、旧的 IPv4 兼容地址）
+        if b[0..<12].allSatisfy({ $0 == 0 }) {
+            return embeddedIPv4 <= 1 || isPrivateIPv4(embeddedIPv4)
         }
-        if address.hasPrefix("fc") || address.hasPrefix("fd") { return true }   // fc00::/7 唯一本地
-        if address.hasPrefix("ff") { return true }  // 组播
-        // IPv4 映射地址 ::ffff:a.b.c.d
-        if address.hasPrefix("::ffff:"), let octets = ipv4Octets(String(address.dropFirst(7))) {
-            return isPrivateIPv4(octets)
+        // ::ffff:0:0/96 IPv4 映射地址
+        if b[0..<10].allSatisfy({ $0 == 0 }), b[10] == 0xff, b[11] == 0xff {
+            return isPrivateIPv4(embeddedIPv4)
         }
+        // 64:ff9b::/96 NAT64：看内嵌的 IPv4
+        if b[0] == 0x00, b[1] == 0x64, b[2] == 0xff, b[3] == 0x9b, b[4..<12].allSatisfy({ $0 == 0 }) {
+            return isPrivateIPv4(embeddedIPv4)
+        }
+        if b[0] & 0xfe == 0xfc { return true }                 // fc00::/7 唯一本地
+        if b[0] == 0xfe, b[1] & 0xc0 == 0x80 { return true }   // fe80::/10 链路本地
+        if b[0] == 0xfe, b[1] & 0xc0 == 0xc0 { return true }   // fec0::/10 旧站点本地
+        if b[0] == 0xff { return true }                        // ff00::/8 组播
         return false
     }
 }

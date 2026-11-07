@@ -749,3 +749,26 @@ struct PrivateRedirectTests {
         #expect(PrivateRedirectBlocker.allowedRedirect(sameLANHost, originalHost: "192.168.1.10") != nil)
     }
 }
+
+struct NetworkAddressBypassTests {
+
+    @Test func flagsNonCanonicalIPv4Forms() {
+        for host in ["127.1", "0177.0.0.1", "0x7f.0.0.1", "0x7f000001", "2130706433", "192.168.257", "10.1", "127.0.0.1.",
+                     "0300.0250.0.1", "999.1.1.1"] {
+            #expect(NetworkAddressPolicy.isPrivateHost(host), "\(host)")
+        }
+    }
+
+    @Test func flagsNonCanonicalIPv6Forms() {
+        for host in ["0:0:0:0:0:0:0:1", "[0:0:0:0:0:0:0:1]", "::ffff:7f00:1", "::ffff:c0a8:101", "::127.0.0.1",
+                     "64:ff9b::10.0.0.1", "fec0::1", "FE80::1%en0", "::", "not:an:address::x"] {
+            #expect(NetworkAddressPolicy.isPrivateHost(host), "\(host)")
+        }
+    }
+
+    @Test func stillAllowsPublicHosts() {
+        for host in ["cafe.com", "ad.example.com", "1e100.net", "8.8.8.8", "::ffff:808:808", "64:ff9b::8.8.8.8", "2001:4860::8888"] {
+            #expect(!NetworkAddressPolicy.isPrivateHost(host), "\(host)")
+        }
+    }
+}
