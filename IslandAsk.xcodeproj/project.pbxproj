@@ -10,6 +10,7 @@
 		B6562F9630970285008E002D /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B6562F9530970285008E002D /* WidgetKit.framework */; };
 		B6562F9830970285008E002D /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = B6562F9730970285008E002D /* SwiftUI.framework */; };
 		B6562FA530970288008E002D /* IslandAskWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B6D7B76C309E482F001F46FC /* IslandAskShare.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = B6D7B762309E482F001F46FC /* IslandAskShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -27,6 +28,13 @@
 			remoteGlobalIDString = B6562F9230970285008E002D;
 			remoteInfo = IslandAskWidgetExtension;
 		};
+		B6D7B76A309E482F001F46FC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = B6562F793097021B008E002D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B6D7B761309E482F001F46FC;
+			remoteInfo = IslandAskShare;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -36,6 +44,7 @@
 			dstSubfolder = PlugIns;
 			files = (
 				B6562FA530970288008E002D /* IslandAskWidgetExtension.appex in Embed Foundation Extensions */,
+				B6D7B76C309E482F001F46FC /* IslandAskShare.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 		};
@@ -48,6 +57,7 @@
 		B6562F9530970285008E002D /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		B6562F9730970285008E002D /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 		B6562FFC30978D05008E002D /* IslandAskWidgetExtension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = IslandAskWidgetExtension.entitlements; sourceTree = "<group>"; };
+		B6D7B762309E482F001F46FC /* IslandAskShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = IslandAskShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -77,6 +87,21 @@
 			);
 			target = B6562F9230970285008E002D /* IslandAskWidgetExtension */;
 		};
+		B6D7B770309E482F001F46FC /* Exceptions for "IslandAskShare" folder in "IslandAskShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = B6D7B761309E482F001F46FC /* IslandAskShare */;
+		};
+		B6D7B779309E4ABF001F46FC /* Exceptions for "IslandAsk" folder in "IslandAskShare" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Config/AppGroup.swift,
+				Services/ShareInbox.swift,
+			);
+			target = B6D7B761309E482F001F46FC /* IslandAskShare */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -90,6 +115,7 @@
 			exceptions = (
 				B6562FAC30970402008E002D /* Exceptions for "IslandAsk" folder in "IslandAsk" target */,
 				B6562FCC309711EB008E002D /* Exceptions for "IslandAsk" folder in "IslandAskWidgetExtension" target */,
+				B6D7B779309E4ABF001F46FC /* Exceptions for "IslandAsk" folder in "IslandAskShare" target */,
 			);
 			path = IslandAsk;
 			sourceTree = "<group>";
@@ -100,6 +126,14 @@
 				B6562FA630970288008E002D /* Exceptions for "IslandAskWidget" folder in "IslandAskWidgetExtension" target */,
 			);
 			path = IslandAskWidget;
+			sourceTree = "<group>";
+		};
+		B6D7B763309E482F001F46FC /* IslandAskShare */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				B6D7B770309E482F001F46FC /* Exceptions for "IslandAskShare" folder in "IslandAskShare" target */,
+			);
+			path = IslandAskShare;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -122,6 +156,11 @@
 				B6562F9630970285008E002D /* WidgetKit.framework in Frameworks */,
 			);
 		};
+		B6D7B75F309E482F001F46FC /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -132,6 +171,7 @@
 				B6562F833097021B008E002D /* IslandAsk */,
 				B6562F9930970285008E002D /* IslandAskWidget */,
 				B610EFAB309A569E00C027BF /* IslandAskTests */,
+				B6D7B763309E482F001F46FC /* IslandAskShare */,
 				B6562F9430970285008E002D /* Frameworks */,
 				B6562F823097021B008E002D /* Products */,
 			);
@@ -143,6 +183,7 @@
 				B6562F813097021B008E002D /* IslandAsk.app */,
 				B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */,
 				B610EFAA309A569E00C027BF /* IslandAskTests.xctest */,
+				B6D7B762309E482F001F46FC /* IslandAskShare.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -193,6 +234,7 @@
 			);
 			dependencies = (
 				B6562FA430970288008E002D /* PBXTargetDependency */,
+				B6D7B76B309E482F001F46FC /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				B6562F833097021B008E002D /* IslandAsk */,
@@ -220,6 +262,24 @@
 			productReference = B6562F9330970285008E002D /* IslandAskWidgetExtension.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		B6D7B761309E482F001F46FC /* IslandAskShare */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = B6D7B76D309E482F001F46FC /* Build configuration list for PBXNativeTarget "IslandAskShare" */;
+			buildPhases = (
+				B6D7B75E309E482F001F46FC /* Sources */,
+				B6D7B75F309E482F001F46FC /* Frameworks */,
+				B6D7B760309E482F001F46FC /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				B6D7B763309E482F001F46FC /* IslandAskShare */,
+			);
+			name = IslandAskShare;
+			productName = IslandAskShare;
+			productReference = B6D7B762309E482F001F46FC /* IslandAskShare.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -238,6 +298,9 @@
 						CreatedOnToolsVersion = 27.0;
 					};
 					B6562F9230970285008E002D = {
+						CreatedOnToolsVersion = 27.0;
+					};
+					B6D7B761309E482F001F46FC = {
 						CreatedOnToolsVersion = 27.0;
 					};
 				};
@@ -259,6 +322,7 @@
 				B6562F803097021B008E002D /* IslandAsk */,
 				B6562F9230970285008E002D /* IslandAskWidgetExtension */,
 				B610EFA9309A569E00C027BF /* IslandAskTests */,
+				B6D7B761309E482F001F46FC /* IslandAskShare */,
 			);
 		};
 /* End PBXProject section */
@@ -275,6 +339,11 @@
 			);
 		};
 		B6562F9130970285008E002D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		B6D7B760309E482F001F46FC /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -297,6 +366,11 @@
 			files = (
 			);
 		};
+		B6D7B75E309E482F001F46FC /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+			);
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -309,6 +383,11 @@
 			isa = PBXTargetDependency;
 			target = B6562F9230970285008E002D /* IslandAskWidgetExtension */;
 			targetProxy = B6562FA330970288008E002D /* PBXContainerItemProxy */;
+		};
+		B6D7B76B309E482F001F46FC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B6D7B761309E482F001F46FC /* IslandAskShare */;
+			targetProxy = B6D7B76A309E482F001F46FC /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -629,6 +708,68 @@
 			};
 			name = Release;
 		};
+		B6D7B76E309E482F001F46FC /* Debug configuration for PBXNativeTarget "IslandAskShare" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = IslandAskShare/IslandAskShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6GDQDX75Z3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IslandAskShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IslandAsk;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wentao.IslandAsk.IslandAskShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		B6D7B76F309E482F001F46FC /* Release configuration for PBXNativeTarget "IslandAskShare" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = IslandAskShare/IslandAskShare.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6GDQDX75Z3;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = IslandAskShare/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = IslandAsk;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.wentao.IslandAsk.IslandAskShare;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				REGISTER_APP_GROUPS = YES;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -661,6 +802,14 @@
 			buildConfigurations = (
 				B6562FA830970288008E002D /* Debug configuration for PBXNativeTarget "IslandAskWidgetExtension" */,
 				B6562FA930970288008E002D /* Release configuration for PBXNativeTarget "IslandAskWidgetExtension" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		B6D7B76D309E482F001F46FC /* Build configuration list for PBXNativeTarget "IslandAskShare" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				B6D7B76E309E482F001F46FC /* Debug configuration for PBXNativeTarget "IslandAskShare" */,
+				B6D7B76F309E482F001F46FC /* Release configuration for PBXNativeTarget "IslandAskShare" */,
 			);
 			defaultConfigurationName = Release;
 		};

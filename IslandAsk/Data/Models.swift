@@ -193,6 +193,15 @@ final class Card {
     var sourceURLState: String?
     var sourcePlatform: String?
     var sourceTitle: String?
+    /// M-C2：分享卡片最近一次整理失败的原因（灵动岛那套错误文案）；整理成功时清掉。按键卡片的失败原因仍记在会话上。
+    var organizeError: String?
+    /// M-C2 补充：链接卡片的封面图、网站图标（相对 App Group 容器的路径），没有时为 nil。
+    var coverPath: String?
+    var iconPath: String?
+    /// 取过封面图和图标的时间（取到没取到都记），回前台补取时据此跳过，避免每次都重新下载。
+    var linkImagesFetchedAt: Date?
+    /// M-C2 补充：网站拦截了程序读取（或标题、描述、正文全都拿不到），详情页提示改用按键截屏收藏。
+    var linkBlocked: Bool?
     /// 删除卡片时级联删除会话；会话的追问再由 AskSession.messages 级联删除。
     @Relationship(deleteRule: .cascade, inverse: \AskSession.card)
     var session: AskSession?
@@ -206,6 +215,16 @@ final class Card {
     }
 
     var isSavedValue: Bool { isSaved ?? false }
+
+    var originValue: Origin {
+        Origin(rawValue: origin) ?? .press
+    }
+
+    /// 分享得到的卡片的原链接（只认 http / https，界面上可点）。
+    var sourceLink: URL? {
+        guard let sourceURL, let url = URL(string: sourceURL), LinkMetadataFetcher.isFetchable(url) else { return nil }
+        return url
+    }
 
     var organizeStatusValue: OrganizeStatus {
         organizeStatus.flatMap(OrganizeStatus.init(rawValue:)) ?? .done
@@ -228,12 +247,24 @@ final class Card {
         screenshotPath.flatMap { ScreenshotStore.url(forRelativePath: $0) }
     }
 
+    var coverURL: URL? {
+        coverPath.flatMap { ScreenshotStore.url(forRelativePath: $0) }
+    }
+
+    var iconURL: URL? {
+        iconPath.flatMap { ScreenshotStore.url(forRelativePath: $0) }
+    }
+
     /// 列表和灵动岛显示的标题：没有标题时用摘要，再没有用转录文字。
     var displayTitle: String {
         if let title, !title.isEmpty { return title }
         if let summary, !summary.isEmpty { return String(summary.prefix(Self.maxTitleLength)) }
         let transcript = session?.transcript.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if !transcript.isEmpty { return String(transcript.prefix(Self.maxTitleLength)) }
+        // M-C2 分享卡片还没整理时：网页标题 → 附注 → 域名。
+        if let sourceTitle, !sourceTitle.isEmpty { return String(sourceTitle.prefix(Self.maxTitleLength)) }
+        if let note, !note.isEmpty { return String(note.prefix(Self.maxTitleLength)) }
+        if let host = sourceLink?.host(), !host.isEmpty { return host }
         return "未命名卡片"
     }
 

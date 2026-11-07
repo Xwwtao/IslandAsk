@@ -50,6 +50,8 @@ struct AskAboutScreenIntent: AppIntent, AudioRecordingIntent, LiveActivityIntent
                 triggeredAt: triggeredAt
             )
             logger.info("perform succeeded session=\(sessionID.uuidString, privacy: .public)")
+            // M-C2：录音已经开始，再顺带导入分享扩展的 inbox（只建卡、不整理），不拖慢按键后的响应。
+            await SessionCoordinator.shared.importShareInbox()
             return .result()
         } catch {
             let nsError = error as NSError

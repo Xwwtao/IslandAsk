@@ -472,6 +472,18 @@ struct SettingsView: View {
             } label: {
                 SettingsLabel("快捷指令与操作按钮", systemName: "square.2.layers.3d", color: .pink)
             }
+            // M-C2：分享菜单收藏链接。
+            NavigationLink {
+                ScrollView {
+                    ShareShortcutGuideView()
+                        .padding(20)
+                }
+                .background(Theme.Colors.pageBackground)
+                .navigationTitle("分享收藏设置")
+                .navigationBarTitleDisplayMode(.inline)
+            } label: {
+                SettingsLabel("从分享菜单收藏链接", systemName: "square.and.arrow.up", color: .blue)
+            }
         } header: {
             Text("快捷指令")
         }

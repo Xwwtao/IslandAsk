@@ -32,7 +32,7 @@ agent 的定位：替用户「动手」整理，包括起标题、归类、打�
 6. 回答返回，灵动岛自动展开几秒，显示 30–40 字的简要回答，并带「收藏」按钮。
 7. 用户点击灵动岛 → 进入 App 里这张卡片的详情页，查看截图和回答，并可继续追问。问题较复杂时，详情页自动用深度思考流式生成更完整的长回答。
 
-目标交互 C（带链接收藏，M-C2）：在任意 App 里点「分享」→ 选择本 App，链接、标题和可选的附注文字直接存为卡片。
+目标交互 C（带链接收藏，M-C2）：在任意 App 里点「分享」→ 选择本 App，链接、标题和可选的附注文字直接存为卡片。小红书、微信等不调起系统分享菜单的 App：在它们的面板里点「复制链接」，回到本 App 后在收藏库顶部一键收藏。
 
 非目标（当前不做）：锁屏状态下提问、实时连续共享屏幕、语音播报回答、Android 版本、自建服务端、iCloud 多设备同步、替用户操作其他 App。
 
@@ -82,14 +82,15 @@ IslandAsk/                           // 主 App target
 │   ├── AppState.swift               // 导航路径、暂存的深链
 │   └── AppShortcuts.swift           // AppShortcutsProvider
 ├── Config/
-│   ├── AppGroup.swift               // App Group 标识与容器路径
+│   ├── AppGroup.swift               // App Group 标识与容器路径；M-C2 阶段 2 起同时属于 IslandAskShare target
 │   └── Secrets.swift                // 已废弃（gitignore），Key 改存 Keychain
 ├── Intents/
 │   ├── AskAboutScreenIntent.swift   // 只属于主 App
 │   └── SaveLinkIntent.swift         // （M-C2）快捷指令共享表单收藏链接
 ├── Session/
 │   ├── SessionCoordinator.swift
-│   ├── SessionCoordinator+Cards.swift  // （M-C1）写卡片、灵动岛收藏 / 改为提问、批量操作、重新整理、旧会话补建卡片；（M-C2）导入 inbox
+│   ├── SessionCoordinator+Cards.swift  // （M-C1）写卡片、灵动岛收藏 / 改为提问、批量操作、重新整理、旧会话补建卡片
+│   ├── SessionCoordinator+Links.swift  // （M-C2）分享链接建卡与整理、回前台补整理、导入 inbox
 │   └── StreamingReply.swift         // 深度回答流式状态、后台任务封装
 ├── Agent/                           // （M-C4）
 │   ├── AgentTool.swift              // 工具协议与注册表
@@ -105,8 +106,10 @@ IslandAsk/                           // 主 App target
 │   ├── LLMClient.swift
 │   ├── AppSettings.swift            // 设置项（UserDefaults）
 │   ├── KeychainStore.swift          // API Key
-│   ├── LinkMetadataFetcher.swift    // （M-C2）抓取链接标题、描述
-│   ├── ShareInbox.swift             // （M-C2）App Group inbox 读写
+│   ├── LinkMetadataFetcher.swift    // （M-C2）抓取链接标题、描述；（M-C2 补充）正文摘录、封面图和图标地址
+│   ├── LinkImageStore.swift         // （M-C2 补充）链接封面图、网站图标的下载、缩小与存储
+│   ├── ShareInbox.swift             // （M-C2）App Group inbox 读写；同时属于 IslandAskShare target
+│   ├── ClipboardLinkDetector.swift  // （M-C2）剪贴板入口：检测剪贴板里是否有链接（不读内容）
 │   └── SpotlightIndexer.swift       // （M-C3）Core Spotlight 索引
 ├── Shared/                          // 两个 target 共享（在 pbxproj 里逐个文件登记）
 │   ├── AskActivityAttributes.swift  // 含深链 URL 辅助函数
@@ -120,6 +123,7 @@ IslandAsk/                           // 主 App target
 └── UI/
     ├── OnboardingView.swift
     ├── LibraryView.swift            // （M-C1）收藏库，替换原 HistoryView.swift（含 ScreenshotThumbnail）
+    ├── ClipboardLinkBanner.swift    // （M-C2）收藏库顶部的剪贴板提示条
     ├── CardDetailView.swift         // （M-C1）卡片信息、编辑标题和标签、批量加标签；详情页本身复用会话页
     ├── SessionDetailView.swift
     ├── SettingsView.swift
@@ -301,7 +305,11 @@ struct StopAskIntent: LiveActivityIntent {
     func addTag(_ tag: String, toCards ids: [UUID])            // 多选批量追加标签
     func backfillCardsForLegacySessions()                      // 启动时为旧会话补建卡片
     // M-C2 起
-    func importShareInbox() async                              // 导入分享扩展写入的 inbox
+    func saveSharedLink(url: URL?, text: String?) async -> SaveSharedLinkResult   // SaveLinkIntent
+    func organizePendingShareCards() async                     // 回前台补整理 pending 的分享卡片
+    func organizeShareCard(id: UUID, metadataTimeout: Duration, allowRetry: Bool) async -> Bool
+    func importShareInbox() -> Int                             // 导入分享扩展写入的 inbox：只建卡，返回新建数
+    func saveClipboardText(_ text: String) async -> SaveClipboardResult   // 剪贴板提示条的「收藏」；同链接已有卡片时不新建
 }
 ```
 
@@ -371,6 +379,9 @@ protocol LLMProvider: Sendable {
     // 「改为提问」= ask）；onSummary 在流式 summary 一完整时回调，同时带上已到达的 intent
     func ask(imageJPEG: Data?, screenText: String?, question: String, history: [LLMTurn],
              intentHint: LLMIntent?, onSummary: ((String, LLMIntent?) async -> Void)?) async throws -> LLMAnswer
+    // M-C2 链接整理：不带图的快速档，intent 固定 collect；allowRetry = false 时不重试（Intent 链路有时限）
+    func organizeLink(url: URL?, pageTitle: String?, pageDescription: String?, pageExcerpt: String?,
+                      sharedText: String?, coverJPEG: Data?, allowRetry: Bool) async throws -> LLMAnswer
     // 深度档：会话页和追问用
     func streamDeepAnswer(imageJPEG: Data?, screenText: String?, question: String, history: [LLMTurn]) -> AsyncThrowingStream<LLMStreamEvent, Error>
 }
@@ -530,6 +541,11 @@ listening 布局按 M1 真机反馈调整，原因：
     var sourceURL: String?
     var sourceURLState: String?        // shared（分享得到）/ guessed（agent 推测，待确认）/ confirmed（用户确认）
     var sourcePlatform: String?; var sourceTitle: String?
+    var organizeError: String?         // （M-C2）分享卡片最近一次整理失败的原因
+    var coverPath: String?             // （M-C2 补充）链接封面图，相对 App Group 容器：sessions/<id>-cover.jpg
+    var iconPath: String?              // （M-C2 补充）网站图标：sessions/<id>-icon.png
+    var linkImagesFetchedAt: Date?     // （M-C2 补充）取过图片的时间，取到没取到都记
+    var linkBlocked: Bool?             // （M-C2 补充）网站拦截读取或什么都没抓到，详情页提示改用按键截屏
     @Relationship(deleteRule: .cascade, inverse: \AskSession.card)
     var session: AskSession?           // 分享得到的卡片在用户提问前为 nil
 }
@@ -599,7 +615,7 @@ listening 布局按 M1 真机反馈调整，原因：
 ```swift
 struct SaveLinkIntent: AppIntent {
     static var title: LocalizedStringResource = "收藏到 IslandAsk"
-    static var openAppWhenRun = false
+    static let supportedModes: IntentModes = .background   // iOS 26 起 openAppWhenRun 已弃用
     @Parameter(title: "链接") var url: URL?
     @Parameter(title: "附注") var text: String?
     func perform() async throws -> some IntentResult & ProvidesDialog   // 返回「已收藏：<标题>」
@@ -607,21 +623,51 @@ struct SaveLinkIntent: AppIntent {
 ```
 
 - 用户新建快捷指令「收藏」，在快捷指令详情里打开「在共享表单中显示」，接收 URL 和文本，动作为「收藏到 IslandAsk」。
-- 流程：立即建卡（origin = share，sourceURL，sourceURLState = shared，organizeStatus = pending）→ 抓取链接元数据 → 快速档整理（无截图，输入为网页标题、描述、用户附注）→ 写回卡片 → 返回 dialog。
-- 元数据：`LinkPresentation` 的 `LPMetadataProvider` 取标题；描述用 URLSession 读页面的 `og:description`（超时 8 秒，最多读 512KB）。`LPMetadataProvider` 能否在后台 Intent 里使用需要核对官方文档。
-- 微信、小红书这类 App 分享出的常是短链或需要登录的页面，抓不到内容时只用标题和附注整理。
-- 整理失败时卡片保留为 pending，下次 App 回到前台时由 `SessionCoordinator` 补整理。
+- 流程：立即建卡（origin = share，sourceURL，sourceURLState = shared，organizeStatus = pending，isSaved = true）→ 抓取链接元数据 → 快速档整理（无截图，输入为网页标题、描述、用户附注）→ 写回卡片 → 返回 dialog。
+- 输入：只认 http / https 链接；url 为空时从文字里找第一个链接；文字去掉链接本身后剩下的部分存为附注（原文保存，不用模型改写）。文字里没有链接时照常建卡（纯文字收藏）。链接和文字都为空时不建卡。
+- 元数据：`LinkPresentation` 的 `LPMetadataProvider` 取标题，取不到时用 `og:title`、`<title>` 兜底；描述用 URLSession 读页面的 `og:description`（最多读 512KB，读到 `</head>` 即停）。两路并行。`LPMetadataProvider` 能否在后台 Intent 里使用需要核对官方文档。
+- 微信、小红书这类 App 分享出的常是短链或需要登录的页面，抓不到内容时只用标题和附注整理。抓取失败不算整理失败。
+- 时间预算：Intent 链路元数据最多 5 秒，整个流程最多约 15 秒，大模型不重试；超时先返回「已收藏，回到 App 后整理」，请求在后台任务里继续。回前台补整理和手动重新整理时元数据最多 8 秒，大模型可重试 1 次。
+- 整理失败分两种：网络类（断网、超时、5xx、429、被取消）保留为 pending，下次 App 回到前台时由 `SessionCoordinator` 补整理；其他（没配 Key、地址错、4xx、格式错误、被截断）标为 failed，在 App 里手动「重新整理」，避免每次回前台白白重试。
+- 界面：「整理中」只在请求真正进行时显示，其余 pending 显示「待整理」。
 
 **阶段 2：Share Extension**
 
 - 新建 target `IslandAskShare`，开启 App Group。激活规则支持 URL 和纯文本（`NSExtensionActivationRule` 的具体写法需要核对官方文档）。
 - 界面只有一个确认面板：标题预览、可选的附注输入框、「收藏」按钮。
 - 扩展只把 `{id, url, title, text, createdAt}` 写进 App Group 的 `inbox/<id>.json`，不调大模型、不写 SwiftData。
-- 主 App 在回到前台、每次 Intent 运行时，由 `SessionCoordinator` 导入 inbox：建卡、整理，成功写库后再删除对应文件。
+- 主 App 在回到前台、每次 Intent 运行时，由 `SessionCoordinator` 导入 inbox：建卡，成功写库后再删除对应文件（写库失败时保留文件，下次再导）；整理统一由 `organizePendingShareCards` 在回到前台时进行。
+  - 回到前台：导入，然后整理全部 pending 的分享卡片。
+  - `SaveLinkIntent`：导入只建卡，不在 Intent 的时限里整理这些卡片。
+  - `AskAboutScreenIntent`：等录音开始后再导入，只建卡、不在后台整理，不能拖慢按键后的响应。
+- 扩展附带的标题先记为卡片的 sourceTitle：未整理时列表显示它，整理时作为网页标题的兜底。
+
+**M-C2 补充：正文摘录和图片**（真机测试发现很多链接只抓到标题，摘要没内容可写；链接卡片在列表里没有图片）
+
+- 页面读到 512KB 上限（不再在 `</head>` 处停），请求头用手机 Safari 的 User-Agent（默认的 CFNetwork UA 会被部分网站当成爬虫）。到上限还没看到正文容器（`id="js_content"`）时继续读，最多 2MB，找到后再读 150KB 就停（真机样例：微信公众号正文从第 630KB 开始）。
+- 网页标题去掉末尾的站名后缀（「 - rednote」「 - 小红书」「 - 知乎」等）。
+- 正文摘录：微信公众号取 `id="js_content"` 的容器，其次 `<article>`、`<main>`、`<body>`；去掉 script、style、导航、页眉页脚等，最多 3000 字，和标题、描述、附注一起发给快速档。不足 40 字的当作没有。
+- 封面图取 `og:image` / `twitter:image`（微信公众号退回脚本里的 `msg_cdn_url`），网站图标取 `apple-touch-icon`，其次 `icon`，都没有时试 `/favicon.ico`。只用网站自己声明的图片，不内置任何 App 的图标素材。
+- 图片与大模型请求并行下载（最多 3MB、8 秒），不占 Intent 的时限；封面长边缩到 600px 存 JPEG，图标缩到 128px 存 PNG，删除卡片时一起删除。
+- 回到前台时为还没取过图片的链接卡片补取，每次最多 10 张。
+- 列表缩略图：有封面图显示封面图，否则浅色底上放网站图标，都没有时显示链接符号。卡片详情：顶部显示封面大图，来源一行显示网站图标和域名。
+- 文字很少（正文摘录不到 500 字、描述不到 100 字）又有封面图时，先下载封面图（长边 1280px）随文字一起发给快速档识图；Intent 链路最多等 4 秒，前台最多 8 秒，等不到就只用文字。小红书笔记的内容多在图里，页面能提取的只有评论和推荐。
+- 网站拦截程序读取时（状态码 401、403、412、429、451、567，跳转到访客验证、验证码类主机，或标题、描述、正文全都拿不到），卡片记 `linkBlocked = true`，详情页提示「这个网站不允许直接读取内容」，建议在原 App 里按键截屏收藏。真机样例：知乎 403、酷安 567、微博跳转访客验证。
+- 不做绕过：不用隐藏的 WKWebView 执行网站的验证脚本，不调用网站未公开的接口。
+- 链接卡片详情的「更多」菜单有「重新整理」，任何状态都可用（已整理的也可以）：确认后重新读取网页和图片，标题、摘要、标签被新结果覆盖，附注保留。
+
+**剪贴板入口**（小红书、微信的分享面板不调起系统分享菜单，Share Extension 和共享表单都用不了）
+
+- 用户在这些 App 里点「复制链接」，回到本 App。收藏库最上方显示提示条「剪贴板里有链接」，带系统 `PasteButton`「收藏」和「✕」。
+- 检测只用 `UIPasteboard.detectedPatterns(for: [\.probableWebURL])`，不读剪贴板内容（读内容会弹「是否允许粘贴」）；所以收藏前提示条不显示是哪个链接。`PasteButton` 由系统粘贴，不弹框。
+- 收藏、点「✕」过的剪贴板（按 `changeCount` 记）不再提示，内容变了才再出现；本 App 在前台时自己复制造成的变化直接记为已处理。
+- 同一个链接已有卡片时不新建，提示条显示「这个链接已收藏过」，可以点开那张卡片（剪贴板入口最容易重复；分享入口仍不去重）。
+- 建卡后立即返回，整理按前台规则（元数据 8 秒、可重试）。
+- 所有入口的分享文字都去掉已知的宣传语和口令（目前覆盖小红书：「复制本条信息，打开【小红书】App查看精彩内容！」「| 小红书 - 你的生活指南」、表情包住的口令），附注和发给模型的都是干净的内容；认不出的文字原样保留。
 
 ### 6.14 检索与找回（M-C3）
 
-- 本地搜索：在标题、摘要、标签、附注、OCR 文字、转录文字、翻译、关键信息中做文本包含匹配。
+- 本地搜索：在标题、摘要、标签、附注、OCR 文字、转录文字、翻译、关键信息中做文本包含匹配。收藏库的搜索框已先实现（M-C2 时修复）：按空白拆词，每个词都要匹配；以 `#` 或 `＃` 开头的词只匹配标签（标签存储时不带 #）。卡片详情里点标签回到收藏库，搜索框填入「#标签」，同时切到「全部」、清掉类型筛选。
 - 自然语言搜索：用户输入的是一句话、或本地匹配为空时，把查询和最近 200 张卡片的「id + 标题 + 类型 + 标签 + 摘要首句」发给快速档，让模型返回最相关的卡片 id 列表（JSON）。只在前台调用。
 - Core Spotlight：卡片创建、整理完成、编辑、删除时同步 `CSSearchableItem`（标题、摘要、标签、缩略图），点击打开 `islandask://card/<id>`。
 - 对卡片提问：卡片详情底部加输入框。还没有会话的卡片（如分享得到的）首次提问时创建关联的 `AskSession`，之后同现有追问（深度档流式）。
@@ -672,13 +718,13 @@ struct SaveLinkIntent: AppIntent {
    - 内容：`Card` 模型和旧会话补建卡片、快速档提示词与 `LLMAnswer` 扩展、语音分流、不说话即收藏、灵动岛 collect 布局、`SaveCardIntent` / `SwitchToAskIntent`、收藏库首页（含多选批量删除、收藏、加标签）、卡片详情、重新整理。
    - 完成标准：在微信里按键不说话 → 灵动岛显示「已收藏」和标题；说「这家店周末去，记一下」→ 收藏成功，附注为「周末去」；提问照常，回答后点「收藏」生效；外文截图的卡片带中文翻译；收藏库里能看到所有卡片，旧会话都已补建成卡片。
 7. **M-C2 链接收藏（阶段 1 约 1 天，阶段 2 约 2–3 天）**
-   - 内容：阶段 1 `SaveLinkIntent` 加快捷指令共享表单；阶段 2 Share Extension 加 inbox 导入。
-   - 完成标准：在 Safari、微信、小红书分享链接，卡片带原链接和标题；断网时分享，卡片保留为待整理，联网后回到 App 自动补整理。
+   - 内容：阶段 1 `SaveLinkIntent` 加快捷指令共享表单；阶段 2 Share Extension 加 inbox 导入；剪贴板入口（小红书、微信）。
+   - 完成标准：在 Safari 通过分享菜单收藏，小红书、微信「复制链接」后回到 App 收藏，卡片带原链接和标题，附注里没有宣传语；断网时收藏，卡片保留为待整理，联网后回到 App 自动补整理。
 8. **M-C3 检索与找回（2–3 天）**
    - 内容：本地搜索、自然语言搜索、Core Spotlight、对卡片提问。
    - 完成标准：用「上个月存的那家咖啡店」能找到对应卡片；系统搜索能搜到卡片标题并跳到详情。
 9. **M-C4 Agent 工具调用（4–6 天）**
-   - 内容：工具协议和注册表、前台工具调用循环、联网搜索、找回原链接、「问问我的收藏」。
+   - 内容：工具协议和注册表、前台工具调用循环、联网搜索、找回原链接、「问问我的收藏」。另外评估按 Action Button 时读取剪贴板里的链接挂到截图卡片上（M-C2 时决定推迟：每次按键可能弹「是否允许粘贴」，且剪贴板里可能是无关的旧链接；需要借助 guessed / confirmed 的确认界面）。
    - 完成标准：对需要最新信息的问题，深度回答会先搜索并给出来源；截图卡片点「找回原链接」能给出候选，确认后保存。
 
 ## 8. 验收测试清单
@@ -724,7 +770,8 @@ struct SaveLinkIntent: AppIntent {
 - [ ] 从说完到「已收藏」出现，记录实际耗时，与普通提问对比
 - [ ] 升级后旧会话全部补建为卡片，内容不丢
 - [ ] 删除卡片：截图、录音、会话一并删除，Spotlight 里也消失（M-C3）
-- [ ] 分享链接（M-C2）：Safari、微信、小红书各试一次，记录哪些能抓到标题和描述
+- [ ] 分享链接（M-C2）：Safari 走分享菜单，微信、小红书走「复制链接 → 回到 App 收藏」，各试一次，记录哪些能抓到标题和描述
+- [ ] 剪贴板入口（M-C2）：复制链接后回到 App 出现提示条；点「✕」或收藏后不再出现；同一链接再收藏提示「已收藏过」；附注里没有小红书宣传语
 
 ## 9. 风险与兜底方案
 

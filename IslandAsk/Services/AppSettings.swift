@@ -63,6 +63,7 @@ nonisolated enum AppSettings {
         static let showsTiming = "debug.showsTiming"
         static let noSpeechCollects = "collect.noSpeechCollects"
         static let collectNoSpeechSeconds = "collect.noSpeechSeconds"
+        static let lastHandledClipboardChangeCount = "clipboard.lastHandledChangeCount"
     }
 
     private static var defaults: UserDefaults { .standard }
@@ -104,6 +105,14 @@ nonisolated enum AppSettings {
             return collectNoSpeechOptions.contains(value) ? value : defaultCollectNoSpeechSeconds
         }
         set { defaults.set(newValue, forKey: Key.collectNoSpeechSeconds) }
+    }
+
+    // MARK: - 剪贴板收藏（M-C2）
+
+    /// 已经处理过（收藏、关闭、或是本 App 自己复制）的剪贴板 changeCount；剪贴板没变就不再提示。nil = 从没处理过。
+    static var lastHandledClipboardChangeCount: Int? {
+        get { defaults.object(forKey: Key.lastHandledClipboardChangeCount) as? Int }
+        set { defaults.set(newValue, forKey: Key.lastHandledClipboardChangeCount) }
     }
 
     // MARK: - 历史记录

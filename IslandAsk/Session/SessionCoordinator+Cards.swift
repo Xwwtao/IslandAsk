@@ -327,6 +327,15 @@ extension SessionCoordinator {
     /// 整理失败（或快速档失败）的卡片在 App 内重跑快速档：同一张截图和转录文字，不更新灵动岛。
     /// 转录为空时：卡片意图已是 ask（点过「改为提问」）就按 ask，否则按 collect。
     func reorganizeCard(id: UUID) async {
+        // M-C2：分享卡片没有会话，走链接整理。任何状态都可以手动重来（M-C2 补充：已整理的也可以，
+        // 重新抓网页、重取图片，覆盖标题、摘要和标签；详情页先弹确认）。正在整理时由 organizeShareCard 拦下。
+        if let card = AppDatabase.fetchCard(id: id), card.originValue == .share {
+            logger.info(
+                "reorganize share card card=\(id.uuidString, privacy: .public) status=\(card.organizeStatusValue.rawValue, privacy: .public)"
+            )
+            await organizeShareCard(id: id, metadataTimeout: Self.foregroundMetadataTimeout, allowRetry: true)
+            return
+        }
         guard let session = AppDatabase.fetchSession(id: id) else {
             logger.error("reorganize failed: session not found card=\(id.uuidString, privacy: .public)")
             return

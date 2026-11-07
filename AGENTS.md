@@ -55,7 +55,8 @@ xcodebuild -project IslandAsk.xcodeproj -scheme IslandAsk \
 
 ## 日志
 
-- 统一使用 `os.Logger`，subsystem 取 `Bundle.main.bundleIdentifier`，category 按模块划分：`intent`、`coordinator`、`audio`、`transcription`、`llm`、`activity`，M-C4 起加 `agent`。
+- 统一使用 `os.Logger`，subsystem 取 `Bundle.main.bundleIdentifier`，category 按模块划分：`intent`、`coordinator`、`audio`、`transcription`、`llm`、`activity`，M-C2 起加 `link`（抓取网页元数据、分享扩展），M-C4 起加 `agent`。
+- Share Extension（M-C2）和两个 target 共用的文件里，subsystem 写死为主 App 的 `com.wentao.IslandAsk`（`AppGroup.logSubsystem`），扩展的日志和主 App 在 Console 里用同一个 subsystem 过滤。
 - 链路上每个关键动作的开始、成功、失败都要打日志，失败时带上错误信息，方便我在真机上排查。
 
 ## 工作方式

@@ -67,15 +67,18 @@ nonisolated enum ScreenshotStore {
     static func removeArtifacts(sessionID: UUID) {
         let logger = makeLogger()
         guard let directory = try? sessionsDirectory() else { return }
-        for ext in ["png", "m4a"] {
-            let url = directory.appendingPathComponent(sessionID.uuidString).appendingPathExtension(ext)
+        // 截图、录音，以及 M-C2 补充的链接封面图和网站图标。
+        let fileNames = ["\(sessionID.uuidString).png", "\(sessionID.uuidString).m4a"]
+            + [LinkImageStore.Kind.cover, .icon].map { LinkImageStore.fileName(cardID: sessionID, kind: $0) }
+        for fileName in fileNames {
+            let url = directory.appendingPathComponent(fileName)
             guard FileManager.default.fileExists(atPath: url.path) else { continue }
             do {
                 try FileManager.default.removeItem(at: url)
-                logger.info("artifact removed session=\(sessionID.uuidString, privacy: .public) ext=\(ext, privacy: .public)")
+                logger.info("artifact removed session=\(sessionID.uuidString, privacy: .public) file=\(fileName, privacy: .public)")
             } catch {
                 logger.error(
-                    "artifact remove failed session=\(sessionID.uuidString, privacy: .public) ext=\(ext, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+                    "artifact remove failed session=\(sessionID.uuidString, privacy: .public) file=\(fileName, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
                 )
             }
         }
@@ -191,14 +194,11 @@ nonisolated enum ScreenshotStore {
 }
 
 enum ScreenshotStoreError: LocalizedError {
-    case documentsDirectoryUnavailable
     case invalidImageData
     case jpegEncodingFailed
 
     var errorDescription: String? {
         switch self {
-        case .documentsDirectoryUnavailable:
-            return "找不到 App 的 Documents 目录"
         case .invalidImageData:
             return "截图数据无法解码为图片"
         case .jpegEncodingFailed:

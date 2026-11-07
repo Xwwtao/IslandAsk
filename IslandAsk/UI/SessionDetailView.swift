@@ -42,6 +42,7 @@ struct SessionDetailView: View {
     @State private var showsScreenText = false
     @State private var showsCardEditor = false
     @State private var showsDeleteConfirmation = false
+    @State private var showsReorganizeConfirmation = false
     @FocusState private var inputFocused: Bool
 
     init(sessionID: UUID) {
@@ -52,6 +53,16 @@ struct SessionDetailView: View {
 
     private var card: Card? { cards.first }
 
+    private var navigationTitleText: String {
+        if let session = sessions.first {
+            return session.createdAt.formatted(date: .abbreviated, time: .shortened)
+        }
+        if let card, !card.isGone {
+            return card.createdAt.formatted(date: .abbreviated, time: .shortened)
+        }
+        return "会话"
+    }
+
     /// 收藏卡片：不做深度回答、不显示问答和追问。
     private var isCollect: Bool { card?.intentValue == .collect }
 
@@ -59,12 +70,15 @@ struct SessionDetailView: View {
         Group {
             if let session = sessions.first {
                 content(session)
+            } else if let card, !card.isGone {
+                // M-C2：分享得到的卡片没有会话，只显示卡片信息。
+                LinkCardContent(card: card)
             } else {
                 ContentUnavailableView("找不到这条会话", systemImage: "questionmark.bubble")
             }
         }
         .background(Theme.Colors.pageBackground)
-        .navigationTitle(sessions.first.map { $0.createdAt.formatted(date: .abbreviated, time: .shortened) } ?? "会话")
+        .navigationTitle(navigationTitleText)
         .navigationBarTitleDisplayMode(.inline)
         .task(id: sessionID) {
             player.load(sessionID: sessionID)
@@ -97,6 +111,16 @@ struct SessionDetailView: View {
             if let card {
                 CardEditSheet(card: card)
             }
+        }
+        .confirmationDialog("重新整理这张卡片？", isPresented: $showsReorganizeConfirmation, titleVisibility: .visible) {
+            Button("重新整理") {
+                logger.info("card detail reorganize link card=\(sessionID.uuidString, privacy: .public)")
+                let id = sessionID
+                Task { await SessionCoordinator.shared.reorganizeCard(id: id) }
+            }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("会重新读取网页和图片，标题、摘要和标签会被新结果覆盖，附注保留。")
         }
         .confirmationDialog("删除这张卡片？", isPresented: $showsDeleteConfirmation, titleVisibility: .visible) {
             Button("删除", role: .destructive) {
@@ -387,6 +411,13 @@ struct SessionDetailView: View {
                         showsCardEditor = true
                     }
                     .disabled(card.isBusy)
+                    // M-C2 补充：链接卡片可以随时重新整理（重新抓网页、重取图片）。
+                    if card.originValue == .share {
+                        Button("重新整理", systemImage: "arrow.clockwise") {
+                            showsReorganizeConfirmation = true
+                        }
+                        .disabled(card.isBusy)
+                    }
                     Button("删除", systemImage: "trash", role: .destructive) {
                         showsDeleteConfirmation = true
                     }

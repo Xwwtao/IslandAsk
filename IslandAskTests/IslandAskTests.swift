@@ -502,3 +502,212 @@ struct RecordingTrimmerTests {
         #expect(RecordingTrimmer.keepDuration(speechEndSeconds: 4.9, recordedSeconds: 5.0) == nil)
     }
 }
+
+// MARK: - 链接收藏（M-C2）
+
+struct SharedLinkInputTests {
+
+    @Test func dropsURLFromNoteWhenSameInputPassedTwice() {
+        let url = URL(string: "https://example.com/a?b=1")!
+        let input = SessionCoordinator.resolveSharedInput(url: url, text: "https://example.com/a?b=1")
+        #expect(input.url == url)
+        #expect(input.note == nil)
+    }
+
+    @Test func extractsFirstLinkFromText() {
+        let input = SessionCoordinator.resolveSharedInput(url: nil, text: "【周末去的咖啡店】 https://xhslink.com/abc 复制打开")
+        #expect(input.url?.host() == "xhslink.com")
+        #expect(input.note == "【周末去的咖啡店】  复制打开")
+    }
+
+    @Test func keepsPlainTextWithoutLink() {
+        let input = SessionCoordinator.resolveSharedInput(url: nil, text: "  记一下：周三交房租  ")
+        #expect(input.url == nil)
+        #expect(input.note == "记一下：周三交房租")
+    }
+
+    @Test func ignoresNonHTTPURLButKeepsItInNote() {
+        let url = URL(string: "file:///tmp/a.txt")!
+        let input = SessionCoordinator.resolveSharedInput(url: url, text: nil)
+        #expect(input.url == nil)
+        #expect(input.note == "file:///tmp/a.txt")
+    }
+
+    @Test func emptyInputHasNothing() {
+        let input = SessionCoordinator.resolveSharedInput(url: nil, text: "   ")
+        #expect(input.url == nil)
+        #expect(input.note == nil)
+    }
+
+    @Test func classifiesOrganizeErrors() {
+        #expect(SessionCoordinator.isDeferrableOrganizeError(LLMError.offline))
+        #expect(SessionCoordinator.isDeferrableOrganizeError(LLMError.timeout))
+        #expect(SessionCoordinator.isDeferrableOrganizeError(LLMError.http(status: 503)))
+        #expect(SessionCoordinator.isDeferrableOrganizeError(LLMError.http(status: 429)))
+        #expect(!SessionCoordinator.isDeferrableOrganizeError(LLMError.http(status: 401)))
+        #expect(!SessionCoordinator.isDeferrableOrganizeError(LLMError.missingAPIKey))
+        #expect(!SessionCoordinator.isDeferrableOrganizeError(LLMError.badResponse("x")))
+        #expect(!SessionCoordinator.isDeferrableOrganizeError(LLMError.truncated))
+    }
+}
+
+struct LinkMetadataParsingTests {
+
+    @Test func parsesOpenGraphInAnyAttributeOrder() {
+        let html = """
+            <html><head>
+            <title> 备用 &amp; 标题 </title>
+            <meta content="一家&quot;安静&quot;的咖啡店" property="og:description">
+            <meta property='og:title' content='小巷咖啡 &#x2615;'>
+            </head><body></body></html>
+            """
+        let meta = LinkMetadataFetcher.parsePageMeta(html)
+        #expect(meta.ogTitle == "小巷咖啡 ☕")
+        #expect(meta.htmlTitle == "备用 & 标题")
+        #expect(meta.description == "一家\"安静\"的咖啡店")
+    }
+
+    @Test func fallsBackToMetaDescription() {
+        let html = #"<head><META NAME="description" CONTENT="普通描述"></head>"#
+        let meta = LinkMetadataFetcher.parsePageMeta(html)
+        #expect(meta.ogTitle == nil)
+        #expect(meta.description == "普通描述")
+    }
+
+    @Test func onlyHTTPLinksAreFetchable() {
+        #expect(LinkMetadataFetcher.isFetchable(URL(string: "https://a.com")!))
+        #expect(LinkMetadataFetcher.isFetchable(URL(string: "http://a.com/x")!))
+        #expect(!LinkMetadataFetcher.isFetchable(URL(string: "weixin://dl/x")!))
+        #expect(!LinkMetadataFetcher.isFetchable(URL(string: "file:///a")!))
+    }
+}
+
+struct PromotionalTextTests {
+
+    @Test func cleansXiaohongshuShareText() {
+        let text = "【周末去的咖啡店 - 小王 | 小红书 - 你的生活指南】 😆 AbCdEf123 😆 http://xhslink.com/a/x1Y2，复制本条信息，打开【小红书】App查看精彩内容！"
+        let input = SessionCoordinator.resolveSharedInput(url: nil, text: text)
+        #expect(input.url?.host() == "xhslink.com")
+        #expect(input.note == "周末去的咖啡店 - 小王")
+    }
+
+    @Test func cleansNewerXiaohongshuFormat() {
+        let text = "超好吃的番茄牛腩 http://xhslink.com/o/abc 复制后打开【小红书】查看笔记！"
+        let input = SessionCoordinator.resolveSharedInput(url: nil, text: text)
+        #expect(input.note == "超好吃的番茄牛腩")
+    }
+
+    @Test func linkOnlyLeavesNoNote() {
+        let input = SessionCoordinator.resolveSharedInput(url: nil, text: "http://xhslink.com/o/abc 复制后打开【小红书】查看笔记！")
+        #expect(input.url != nil)
+        #expect(input.note == nil)
+    }
+
+    @Test func keepsUnrecognizedText() {
+        #expect(SessionCoordinator.cleanPromotionalText("周末去，记得带伞") == "周末去，记得带伞")
+        #expect(SessionCoordinator.cleanPromotionalText("【第一】和【第二】") == "【第一】和【第二】")
+    }
+}
+
+struct LinkExcerptAndImageTests {
+
+    @Test func extractsWeChatArticleBody() {
+        let paragraph = String(repeating: "第二艘国产大型邮轮今天在上海出坞，", count: 4)
+        let html = """
+            <html><head><script>var msg_cdn_url = "https://mmbiz.qpic.cn/cover.jpg";</script></head>
+            <body><nav>首页 关于</nav><div class="rich_media_content" id="js_content">
+            <p>\(paragraph)</p><script>track()</script><p>全长 341 米。</p></div></body></html>
+            """
+        let meta = LinkMetadataFetcher.parsePageMeta(html, baseURL: URL(string: "https://mp.weixin.qq.com/s/abc"))
+        let excerpt = meta.excerpt ?? ""
+        #expect(excerpt.hasPrefix("第二艘国产大型邮轮"))
+        #expect(excerpt.contains("全长 341 米。"))
+        #expect(!excerpt.contains("track()"))
+        #expect(!excerpt.contains("首页"))
+        #expect(meta.imageURL?.absoluteString == "https://mmbiz.qpic.cn/cover.jpg")
+    }
+
+    @Test func shortBodyIsNotAnExcerpt() {
+        #expect(LinkMetadataFetcher.extractExcerpt(from: "<body><p>请在微信客户端打开链接</p></body>") == nil)
+    }
+
+    @Test func excerptIsCappedAt3000() {
+        let html = "<article><p>" + String(repeating: "字", count: 5000) + "</p></article>"
+        #expect(LinkMetadataFetcher.extractExcerpt(from: html)?.count == 3000)
+    }
+
+    @Test func resolvesRelativeImageAndIconURLs() {
+        let html = """
+            <head><meta property="og:image" content="/img/cover.png">
+            <link rel="icon" href="favicon-32.png"><link rel="apple-touch-icon" href="//cdn.example.com/touch.png"></head>
+            """
+        let meta = LinkMetadataFetcher.parsePageMeta(html, baseURL: URL(string: "https://example.com/post/1"))
+        #expect(meta.imageURL?.absoluteString == "https://example.com/img/cover.png")
+        #expect(meta.iconURL?.absoluteString == "https://cdn.example.com/touch.png")
+    }
+
+    @Test func dropsDataURIImages() {
+        #expect(LinkMetadataFetcher.resolveWebURL("data:image/png;base64,AAAA", baseURL: URL(string: "https://a.com")) == nil)
+    }
+}
+
+struct LinkBlockingTests {
+
+    @Test func detectsBlockedResponses() {
+        #expect(LinkMetadataFetcher.isBlocked(status: 403, finalURL: URL(string: "https://www.zhihu.com/question/1")))
+        #expect(LinkMetadataFetcher.isBlocked(status: 567, finalURL: URL(string: "https://www.coolapk.com/feed/1")))
+        #expect(LinkMetadataFetcher.isBlocked(
+            status: 200,
+            finalURL: URL(string: "https://visitor.passport.weibo.cn/visitor/visitor?entry=sinawap")
+        ))
+        #expect(!LinkMetadataFetcher.isBlocked(status: 200, finalURL: URL(string: "https://example.com/passport-renewal-guide")))
+        #expect(!LinkMetadataFetcher.isBlocked(status: 404, finalURL: URL(string: "https://example.com/gone")))
+    }
+
+    @Test func stripsSiteSuffixFromTitle() {
+        #expect(LinkMetadataFetcher.stripSiteSuffix("上海！复联总部大楼已亮灯！！ - rednote") == "上海！复联总部大楼已亮灯！！")
+        #expect(LinkMetadataFetcher.stripSiteSuffix("普通标题") == "普通标题")
+        #expect(LinkMetadataFetcher.stripSiteSuffix(" - rednote") == " - rednote")
+    }
+
+    @Test func thinTextNeedsCoverImage() {
+        var metadata = LinkMetadata(title: "笔记", description: "#漫威 #钢铁侠")
+        #expect(SessionCoordinator.isTextThin(metadata))
+        // 小红书页面提取出的几百字评论和推荐仍算文字很少。
+        metadata.excerpt = String(repeating: "评论", count: 180)
+        #expect(SessionCoordinator.isTextThin(metadata))
+        metadata.excerpt = String(repeating: "正文", count: 300)
+        #expect(!SessionCoordinator.isTextThin(metadata))
+        metadata.excerpt = nil
+        metadata.description = String(repeating: "描", count: 120)
+        #expect(!SessionCoordinator.isTextThin(metadata))
+    }
+}
+
+struct CardSearchQueryTests {
+
+    private let texts = ["上海！复联总部大楼已亮灯", "漫威新片宣传", "漫威", "钢铁侠"]
+    private let tags = ["漫威", "钢铁侠"]
+
+    @Test func hashTermMatchesTags() {
+        #expect(CardSearchQuery("#漫威").matches(texts: texts, tags: tags))
+        #expect(CardSearchQuery("＃钢铁侠").matches(texts: texts, tags: tags))
+        #expect(!CardSearchQuery("#上海").matches(texts: texts, tags: tags))
+    }
+
+    @Test func plainTermMatchesAllText() {
+        #expect(CardSearchQuery("上海").matches(texts: texts, tags: tags))
+        #expect(CardSearchQuery("漫威").matches(texts: texts, tags: tags))
+    }
+
+    @Test func allTermsMustMatch() {
+        #expect(CardSearchQuery("#漫威 上海").matches(texts: texts, tags: tags))
+        #expect(!CardSearchQuery("#漫威 北京").matches(texts: texts, tags: tags))
+    }
+
+    @Test func loneHashIsIgnored() {
+        #expect(CardSearchQuery("#").isEmpty)
+        #expect(CardSearchQuery("  #  ").isEmpty)
+        #expect(CardSearchQuery("##漫威").terms == [.init(text: "漫威", tagOnly: true)])
+    }
+}

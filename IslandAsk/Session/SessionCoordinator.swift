@@ -78,6 +78,10 @@ final class SessionCoordinator {
 
     /// App 内正在追问或重问的会话：同一会话同时只允许一个请求。
     var inAppRequestSessionIDs: Set<UUID> = []
+    /// M-C2：organizePendingShareCards 正在运行，避免回前台多次触发时并发整理。
+    var isOrganizingPendingShareCards = false
+    /// M-C2 补充：backfillLinkImages 正在运行。
+    var isBackfillingLinkImages = false
 
     var isStartingSession = false
     var isStopping = false
@@ -1055,6 +1059,7 @@ final class SessionCoordinator {
     /// 进行中的会话（录音、等回答、App 内请求）：不能删除，也不能被批量操作改动。
     func isCardBusy(id: UUID) -> Bool {
         currentSessionID == id || answeringSessionID == id || inAppRequestSessionIDs.contains(id)
+            || LinkOrganizeStore.shared.organizingCardIDs.contains(id)
     }
 
     nonisolated static func milliseconds(_ duration: Duration) -> Int {

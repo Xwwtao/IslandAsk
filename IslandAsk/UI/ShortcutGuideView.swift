@@ -274,3 +274,48 @@ private struct ActionButtonSettingsMock: View {
             .padding()
     }
 }
+
+// MARK: - 分享收藏快捷指令（M-C2）
+
+/// 「收藏」快捷指令的设置说明（SPEC 6.13 阶段 1）：在任意 App 点「分享」→「收藏」，链接和文字存为卡片。
+/// 只有文字步骤，不画示意图；设置页「快捷指令」里进入。
+struct ShareShortcutGuideView: View {
+
+    @ScaledMetric(relativeTo: .footnote) private var stepBadgeSide: CGFloat = 22
+
+    private let steps = [
+        "打开快捷指令 App，点右上角「＋」新建快捷指令，命名为「收藏」。",
+        "点底部的「ⓘ」（详细信息），打开「在共享表单中显示」。",
+        "把「共享表单接收类型」设为「URL」和「文本」，其他类型可以关掉。",
+        "添加动作「收藏到 IslandAsk」，把「链接」和「附注」两个参数都设为「快捷指令输入」。",
+        "之后在 Safari、微信、小红书里点「分享」，选「收藏」即可。链接会自动整理成卡片；断网时先存下，回到 App 再整理。",
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ForEach(Array(steps.enumerated()), id: \.offset) { index, text in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("\(index + 1)")
+                        .font(.caption.bold())
+                        .monospacedDigit()
+                        .foregroundStyle(.white)
+                        .frame(width: stepBadgeSide, height: stepBadgeSide)
+                        .background(Color.accentColor.gradient, in: .circle)
+                        .accessibilityLabel("第 \(index + 1) 步")
+                    Text(text)
+                        .font(.footnote)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .accessibilityElement(children: .combine)
+            }
+            if let shortcutsURL = ShortcutLink.shortcutsAppURL {
+                Link(destination: shortcutsURL) {
+                    Label("打开快捷指令 App", systemImage: "arrow.up.forward.app")
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .padding(.leading, stepBadgeSide + 10)
+            }
+        }
+    }
+}

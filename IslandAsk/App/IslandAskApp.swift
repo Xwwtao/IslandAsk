@@ -113,5 +113,10 @@ struct IslandAskApp: App {
         await coordinator.endOrphanActivitiesIfNeeded()
         coordinator.backfillCardsForLegacySessions()
         coordinator.purgeExpiredSessions()
+        // M-C2：先导入分享扩展的 inbox，再补整理所有 pending 的分享卡片（含分享时断网、超时没整理完的）。
+        coordinator.importShareInbox()
+        await coordinator.organizePendingShareCards()
+        // M-C2 补充：升级前收藏的链接卡片补取封面图和网站图标。
+        await coordinator.backfillLinkImages()
     }
 }

@@ -38,6 +38,7 @@ struct LibraryView: View {
     }
 
     @Environment(AppState.self) private var appState
+    @Environment(\.scenePhase) private var scenePhase
     @Query(sort: \Card.createdAt, order: .reverse) private var cards: [Card]
 
     @AppStorage("library.segment") private var segment: Segment = .all
@@ -58,11 +59,24 @@ struct LibraryView: View {
         NavigationStack(path: $appState.path) {
             Group {
                 if cards.isEmpty {
-                    emptyState
+                    VStack(spacing: 0) {
+                        clipboardBanner
+                            .padding(.horizontal, Theme.Spacing.page)
+                        emptyState
+                    }
                 } else {
                     list
                 }
             }
+            // M-C2 剪贴板入口：出现时和回到前台时检测剪贴板里有没有链接（不读内容、不弹粘贴提示）。
+            .task {
+                await ClipboardLinkDetector.shared.refresh()
+            }
+            .onChange(of: scenePhase) { _, newPhase in
+                guard newPhase == .active else { return }
+                Task { await ClipboardLinkDetector.shared.refresh() }
+            }
+            .animation(.snappy, value: ClipboardLinkDetector.shared.state)
             .navigationTitle(isSelecting ? selectionTitle : "IslandAsk")
             .navigationBarTitleDisplayMode(isSelecting ? .inline : .automatic)
             .searchable(text: $searchText, prompt: "搜索标题、标签或内容")
@@ -99,6 +113,16 @@ struct LibraryView: View {
             } message: {
                 Text("截图和录音也会一起删除")
             }
+            // 卡片详情里点了标签：按「#标签」搜索。切到「全部」、清掉类型筛选，避免结果被其他条件挡住。
+            .onChange(of: appState.pendingLibrarySearch, initial: true) { _, query in
+                guard let query else { return }
+                appState.pendingLibrarySearch = nil
+                endSelecting()
+                segment = .all
+                typeFilter = nil
+                searchText = query
+                logger.info("library: search by tag from card detail chars=\(query.count, privacy: .public)")
+            }
             .onChange(of: visibleCardIDs) { _, visible in
                 // 全选只作用于当前分段和筛选下可见的卡片；切换后看不见的不留在选中里。
                 selection.formIntersection(visible)
@@ -109,7 +133,15 @@ struct LibraryView: View {
     // MARK: - 列表
 
     private var list: some View {
-        List(selection: $selection) {
+        List(selection: listSelection) {
+            if ClipboardLinkDetector.shared.state != .hidden, !isSelecting {
+                Section {
+                    clipboardBanner
+                        .listRowInsets(EdgeInsets())
+                        .listRowBackground(Color.clear)
+                        .selectionDisabled()
+                }
+            }
             Section {
                 filterBar
                     .listRowInsets(EdgeInsets())
@@ -133,6 +165,23 @@ struct LibraryView: View {
         }
         .listStyle(.insetGrouped)
         .animation(.default, value: isSelecting)
+    }
+
+    /// 收藏库最上方的剪贴板提示条；「已收藏过」时点开对应卡片。
+    private var clipboardBanner: some View {
+        ClipboardLinkBanner { cardID in
+            appState.openSession(cardID)
+        }
+    }
+
+    /// 只在多选模式下把 List 绑到真正的选中集合。
+    /// 非多选时 List(selection:) 也会把点开的那行写进 selection：返回收藏库后那一行一直保持选中高亮，
+    /// 再点「选择」时它还会被预先选中。非多选时给一个丢弃写入的绑定，点行仍由 NavigationLink(value:) 负责 push。
+    private var listSelection: Binding<Set<UUID>> {
+        guard isSelecting else {
+            return Binding(get: { [] }, set: { _ in })
+        }
+        return $selection
     }
 
     @ViewBuilder
@@ -260,12 +309,12 @@ struct LibraryView: View {
     // MARK: - 筛选、搜索、分组
 
     private var visibleCards: [Card] {
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = CardSearchQuery(searchText)
         return cards.filter { card in
             if segment == .saved, !card.isSavedValue { return false }
             if let typeFilter, card.cardTypeValue != typeFilter { return false }
             guard !query.isEmpty else { return true }
-            return Self.searchableTexts(of: card).contains { $0.localizedStandardContains(query) }
+            return query.matches(texts: Self.searchableTexts(of: card), tags: card.tags ?? [])
         }
     }
 
@@ -406,7 +455,11 @@ private struct CardRow: View {
 
     private var content: some View {
         HStack(alignment: .top, spacing: 12) {
-            ScreenshotThumbnail(url: card.screenshotURL)
+            if card.originValue == .share {
+                LinkThumbnail(card: card)
+            } else {
+                ScreenshotThumbnail(url: card.screenshotURL)
+            }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text(card.displayTitle)
@@ -481,6 +534,14 @@ private struct CardRow: View {
             case .thinking: return card.intentValue == .collect ? "正在整理…" : "正在想答案…"
             case .failed: return session.errorMessage ?? "整理失败"
             case .answered: break
+            }
+        }
+        if card.originValue == .share {
+            if LinkOrganizeStore.shared.organizingCardIDs.contains(card.id) { return "正在整理…" }
+            switch card.organizeStatusValue {
+            case .pending: return "待整理"
+            case .failed: return card.organizeError ?? "整理失败"
+            case .done: break
             }
         }
         if card.organizeStatusValue == .failed { return "整理失败" }
@@ -569,6 +630,40 @@ private struct TypeChip: View {
 // MARK: - 缩略图
 
 /// 竖版缩略图，比例接近手机截图，顶部对齐，能看到截图的主要内容。按需在主线程外解码，列表滚动时不卡。
+/// M-C2：分享卡片没有截图，缩略图位置显示链接（或纯文字）图标，尺寸与 ScreenshotThumbnail 一致。
+private struct LinkThumbnail: View {
+
+    let card: Card
+
+    @ScaledMetric(relativeTo: .body) private var width: CGFloat = 48
+    @ScaledMetric(relativeTo: .body) private var iconSide: CGFloat = 28
+
+    var body: some View {
+        // M-C2 补充：有封面图用封面图（和截图缩略图同尺寸）；没有就把网站图标放在浅色底上；都没有显示链接图标。
+        if let coverURL = card.coverURL {
+            ScreenshotThumbnail(url: coverURL)
+        } else {
+            RoundedRectangle(cornerRadius: Theme.Radius.inner)
+                .fill(Theme.Colors.insetBackground)
+                .frame(width: width, height: width * 4 / 3)
+                .overlay {
+                    if let iconURL = card.iconURL {
+                        LinkIconImage(url: iconURL, side: iconSide)
+                    } else {
+                        Image(systemName: card.sourceLink != nil ? "link" : "text.quote")
+                            .font(.title3)
+                            .foregroundStyle(.tint)
+                    }
+                }
+                .overlay {
+                    RoundedRectangle(cornerRadius: Theme.Radius.inner)
+                        .strokeBorder(.separator.opacity(0.6))
+                }
+                .accessibilityHidden(true)
+        }
+    }
+}
+
 struct ScreenshotThumbnail: View {
 
     let url: URL?
@@ -615,5 +710,40 @@ struct ScreenshotThumbnail: View {
     @concurrent
     private static func loadThumbnail(url: URL, maxPixelSize: Int) async -> UIImage? {
         ScreenshotStore.thumbnail(url: url, maxPixelSize: maxPixelSize)
+    }
+}
+
+// MARK: - 搜索
+
+/// 收藏库搜索词。按空白拆成多个词，每个词都要匹配（AND）：
+/// - 以 # 或 ＃ 开头的词只匹配标签（标签存的时候不带 #，界面上显示成 #标签），如「#漫威」。
+/// - 其他词匹配标题、摘要、标签、附注、关键信息、问答等全部文字。
+/// 单独一个 # 忽略。匹配不区分大小写和全半角（localizedStandardContains）。
+nonisolated struct CardSearchQuery: Equatable {
+
+    struct Term: Equatable {
+        let text: String
+        let tagOnly: Bool
+    }
+
+    let terms: [Term]
+
+    init(_ raw: String) {
+        terms = raw
+            .split(whereSeparator: \.isWhitespace)
+            .compactMap { word in
+                let tagOnly = word.first == "#" || word.first == "＃"
+                let text = String(word.drop { $0 == "#" || $0 == "＃" })
+                return text.isEmpty ? nil : Term(text: text, tagOnly: tagOnly)
+            }
+    }
+
+    var isEmpty: Bool { terms.isEmpty }
+
+    func matches(texts: [String], tags: [String]) -> Bool {
+        terms.allSatisfy { term in
+            let pool = term.tagOnly ? tags : texts
+            return pool.contains { $0.localizedStandardContains(term.text) }
+        }
     }
 }

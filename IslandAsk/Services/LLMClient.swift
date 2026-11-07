@@ -203,6 +203,19 @@ nonisolated protocol LLMProvider: Sendable {
         intentHint: LLMIntent?,
         onSummary: (@Sendable (String, LLMIntent?) async -> Void)?
     ) async throws -> LLMAnswer
+    /// M-C2 链接收藏的快速档整理（SPEC 6.13）：不带图、不开思考、JSON 模式，intent 固定 collect。
+    /// 输入是链接、网页标题、网页描述和分享时附带的文字，任何一项都可以为 nil（纯文字收藏时 url 为 nil）。
+    /// allowRetry = false 时不重试：Intent 链路有总时长上限，重试一次就会超时。
+    @concurrent
+    func organizeLink(
+        url: URL?,
+        pageTitle: String?,
+        pageDescription: String?,
+        pageExcerpt: String?,
+        sharedText: String?,
+        coverJPEG: Data?,
+        allowRetry: Bool
+    ) async throws -> LLMAnswer
     /// 深度回答：开思考、流式返回。取消消费方的 Task（或停止迭代）会取消网络请求。
     func streamDeepAnswer(
         imageJPEG: Data?,
@@ -237,6 +250,27 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         card.source_platform / card.source_title：根据界面特征判断截图来自哪个 App 或网站、原内容的标题；看不出来时为 null，不要猜。
         card.translation：截图主要内容不是中文时，给出中文翻译，最多 600 字，超出时只翻译开头并以「…」结尾；是中文时为 null。
         如果截图与问题无关或看不清，在 summary 中直接说明。
+        """
+
+    /// M-C2 链接卡片的系统提示词：字段和取值与 systemPrompt 一致，复用同一套解析和规范化。
+    /// note 固定为 null：分享时附带的文字由 App 原样保存为附注，不让模型改写，避免丢掉用户的原文。
+    static let linkSystemPrompt = """
+        你是收藏整理员。用户从其他 App 分享了一个链接（或一段文字）到收藏夹。你会拿到链接地址、网页标题、网页描述、分享时附带的文字和网页正文摘录，其中任何一项都可能缺失；短链、需要登录的页面往往抓不到内容。
+        有正文摘录时，以它为主写摘要和关键信息，忽略其中的导航、按钮、版权声明等无关文字。
+        请据此整理成一张收藏卡片，只输出 JSON：
+        {"intent": "collect", "summary": "...", "answer": "...", "needs_deep": false,
+         "card": {"title": "...", "type": "article", "tags": ["..."], "key_info": [{"label": "...", "value": "..."}],
+                  "note": null, "source_platform": null, "source_title": null, "translation": null}}
+        intent 固定为 collect，needs_deep 固定为 false，card.note 固定为 null。
+        summary：不超过 80 个汉字，概括收藏了什么。
+        answer：2–4 句的内容摘要。信息很少时如实说明只知道标题或链接，不要编造内容。
+        card.title：不超过 20 个汉字，概括内容本身；有网页标题时以它为准提炼。
+        card.type：article / product / place / event / recipe / knowledge / media / chat / other 之一。
+        card.tags：1–4 个中文短标签。
+        card.key_info：值得单独记下的信息，如店名、地址、价格、时间、书名、作者，最多 6 条；没有就给空数组。
+        card.source_platform：根据链接域名和标题判断内容来自哪个 App 或网站（如微信公众号、小红书、哔哩哔哩、知乎），看不出来时为 null，不要猜。
+        card.source_title：原内容的标题，没有时为 null。
+        card.translation：标题、描述或分享文字主要不是中文时，给出中文翻译，最多 600 字；是中文时为 null。
         """
 
     /// 深度回答的系统提示词：直接输出 Markdown 正文，流式显示时不会露出 JSON。
@@ -362,7 +396,96 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         logger.info(
             "ask start model=\(model, privacy: .public) intentHint=\(intentHint?.rawValue ?? "nil", privacy: .public) imageBytes=\(imageJPEG?.count ?? 0, privacy: .public) screenTextChars=\(screenText?.count ?? 0, privacy: .public) questionChars=\(question.count, privacy: .public) history=\(history.count, privacy: .public) bodyBytes=\(body.count, privacy: .public)"
         )
+        return try await runQuickRequest(body: body, maxAttempts: maxAttempts, label: "ask", logger: logger, onSummary: onSummary)
+    }
 
+    @concurrent
+    func organizeLink(
+        url: URL?,
+        pageTitle: String?,
+        pageDescription: String?,
+        pageExcerpt: String?,
+        sharedText: String?,
+        coverJPEG: Data?,
+        allowRetry: Bool
+    ) async throws -> LLMAnswer {
+        let logger = Self.makeLogger()
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            logger.error("organize link aborted: API key is empty")
+            throw LLMError.missingAPIKey
+        }
+        let userText = Self.linkUserText(
+            url: url,
+            pageTitle: pageTitle,
+            pageDescription: pageDescription,
+            pageExcerpt: pageExcerpt,
+            sharedText: sharedText
+        )
+        // 正文很少时调用方会带上封面图（M-C2 补充）：和截图一样放进 user 消息的 content 数组。
+        let userContent: Any
+        if let coverJPEG {
+            userContent = [
+                ["type": "text", "text": userText + "\n\n（附带一张网页的封面或首图。文字信息很少，内容主要在图里时，请据图整理摘要和关键信息。）"],
+                [
+                    "type": "image_url",
+                    "image_url": ["url": "data:image/jpeg;base64,\(coverJPEG.base64EncodedString())", "detail": "high"],
+                ],
+            ] as [[String: Any]]
+        } else {
+            userContent = userText
+        }
+        let body = try makeQuickBody(messages: [
+            ["role": "system", "content": Self.linkSystemPrompt],
+            ["role": "user", "content": userContent],
+        ])
+        logger.info(
+            "organize link start model=\(model, privacy: .public) host=\(url?.host() ?? "nil", privacy: .public) titleChars=\(pageTitle?.count ?? 0, privacy: .public) descriptionChars=\(pageDescription?.count ?? 0, privacy: .public) excerptChars=\(pageExcerpt?.count ?? 0, privacy: .public) sharedTextChars=\(sharedText?.count ?? 0, privacy: .public) coverBytes=\(coverJPEG?.count ?? 0, privacy: .public) allowRetry=\(allowRetry, privacy: .public) bodyBytes=\(body.count, privacy: .public)"
+        )
+        return try await runQuickRequest(
+            body: body,
+            maxAttempts: allowRetry ? maxAttempts : 1,
+            label: "organize link",
+            logger: logger,
+            onSummary: nil
+        )
+    }
+
+    /// 分享文字的上限：整篇文章粘进来时只取开头，避免请求过大、输出变慢。
+    static let maxSharedTextLength = 2000
+
+    /// 链接整理的 user 文字。缺失的项写明「无」，让模型知道是没抓到而不是空内容。
+    static func linkUserText(
+        url: URL?,
+        pageTitle: String?,
+        pageDescription: String?,
+        pageExcerpt: String? = nil,
+        sharedText: String?
+    ) -> String {
+        func value(_ text: String?) -> String {
+            guard let text = text?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return "无" }
+            return text
+        }
+        let shared = sharedText.map { text in
+            text.count > maxSharedTextLength ? String(text.prefix(maxSharedTextLength)) + "…" : text
+        }
+        return """
+            链接：\(url?.absoluteString ?? "无")
+            网页标题：\(value(pageTitle))
+            网页描述：\(value(pageDescription))
+            分享时附带的文字：\(value(shared))
+            网页正文摘录（自动提取，可能夹杂导航、按钮文字）：
+            \(value(pageExcerpt))
+            """
+    }
+
+    /// 快速档请求循环：可重试的错误重试到 maxAttempts 次；摘要回调过之后不再重试。
+    private func runQuickRequest(
+        body: Data,
+        maxAttempts: Int,
+        label: String,
+        logger: Logger,
+        onSummary: (@Sendable (String, LLMIntent?) async -> Void)?
+    ) async throws -> LLMAnswer {
         var attempt = 1
         let summaryDelivered = OSAllocatedUnfairLock(initialState: false)
         let deliverSummary: @Sendable (String, LLMIntent?) async -> Void = { summary, intent in
@@ -371,7 +494,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         }
         while true {
             do {
-                let metrics = TransactionMetricsLogger(label: "ask attempt=\(attempt)")
+                let metrics = TransactionMetricsLogger(label: "\(label) attempt=\(attempt)")
                 var answer = try await performAttempt(
                     body: body,
                     attempt: attempt,
@@ -382,18 +505,18 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
                 // 流式时系统可能在数据读完之后才回调 didFinishCollecting，稍等一下再取（不影响摘要显示）。
                 answer.network = await metrics.waitForTiming(timeout: .milliseconds(300))
                 answer.attempts = attempt
-                logger.info("ask succeeded attempt=\(attempt, privacy: .public)")
+                logger.info("\(label, privacy: .public) succeeded attempt=\(attempt, privacy: .public)")
                 return answer
             } catch let error as LLMError
                 where error.isRetryable && attempt < maxAttempts && !Task.isCancelled
                 && !summaryDelivered.withLock({ $0 }) {
                 logger.error(
-                    "ask attempt=\(attempt, privacy: .public) failed, retrying: \(error.logDescription, privacy: .public)"
+                    "\(label, privacy: .public) attempt=\(attempt, privacy: .public) failed, retrying: \(error.logDescription, privacy: .public)"
                 )
                 attempt += 1
             } catch let error as LLMError {
                 logger.error(
-                    "ask failed attempt=\(attempt, privacy: .public): \(error.logDescription, privacy: .public)"
+                    "\(label, privacy: .public) failed attempt=\(attempt, privacy: .public): \(error.logDescription, privacy: .public)"
                 )
                 throw error
             }
@@ -771,6 +894,11 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
             question: Self.quickQuestionText(question, intentHint: intentHint),
             history: history
         )
+        return try makeQuickBody(messages: messages)
+    }
+
+    /// 快速档请求体（ask 和 organizeLink 共用）。
+    private func makeQuickBody(messages: [[String: Any]]) throws -> Data {
         let body: [String: Any] = [
             "model": model,
             "messages": messages,

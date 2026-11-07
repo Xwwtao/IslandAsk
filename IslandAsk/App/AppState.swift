@@ -25,4 +25,13 @@ final class AppState {
     func openSession(_ id: UUID) {
         path = [.session(id)]
     }
+
+    /// 卡片详情里点标签后要在收藏库执行的搜索词（「#标签」）；收藏库应用后清空。
+    var pendingLibrarySearch: String?
+
+    /// 回到收藏库并按这个标签筛选。
+    func searchLibrary(tag: String) {
+        pendingLibrarySearch = "#\(tag)"
+        path = []
+    }
 }

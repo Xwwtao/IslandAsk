@@ -89,14 +89,18 @@ enum AppDatabase {
         }
     }
 
-    static func save(reason: String) {
+    /// 返回是否保存成功；大多数调用方只需要日志，忽略返回值。
+    @discardableResult
+    static func save(reason: String) -> Bool {
         do {
             try context.save()
             logger.info("database saved reason=\(reason, privacy: .public)")
+            return true
         } catch {
             logger.error(
                 "database save failed reason=\(reason, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
+            return false
         }
     }
 }
