@@ -62,6 +62,7 @@ extension SessionCoordinator {
                 sessionID: sessionID,
                 screenshotURL: screenshotURL,
                 screenText: screenText,
+                cardContext: nil,
                 question: question,
                 history: []
             )
@@ -140,11 +141,13 @@ extension SessionCoordinator {
 
         let history = session.conversationTurns
         let screenshotURL = session.screenshotURL
+        // M-C3：链接、文字收藏卡片没有截图，把卡片信息作为上下文。
+        let cardContext = session.card?.originValue == .share ? session.card?.askContext : nil
         let userMessage = ChatMessage(role: .user, content: question)
         session.messages.append(userMessage)
         AppDatabase.save(reason: "follow-up user message session=\(sessionID.uuidString)")
         logger.info(
-            "follow-up start session=\(sessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public) history=\(history.count, privacy: .public)"
+            "follow-up start session=\(sessionID.uuidString, privacy: .public) chars=\(question.count, privacy: .public) history=\(history.count, privacy: .public) cardContextChars=\(cardContext?.count ?? 0, privacy: .public)"
         )
 
         let reply = StreamingReplyStore.shared.begin(sessionID: sessionID, kind: .followUp)
@@ -155,6 +158,7 @@ extension SessionCoordinator {
                 sessionID: sessionID,
                 screenshotURL: screenshotURL,
                 screenText: screenText,
+                cardContext: cardContext,
                 question: question,
                 history: history
             )
@@ -189,12 +193,56 @@ extension SessionCoordinator {
         }
     }
 
+    /// 卡片详情底部的提问（M-C3，SPEC 6.14）：所有卡片都能问。
+    /// 还没有会话的卡片（分享得到的）先建一个同 id 的 AskSession（status = answered，问答为空），之后同追问（深度档流式）。
+    /// 首次提问失败时连同新建的会话一起撤回，卡片恢复成没有会话的样子。
+    func askAboutCard(cardID: UUID, text: String) async throws {
+        let question = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { return }
+        guard AppDatabase.fetchSession(id: cardID) == nil else {
+            try await askFollowUp(sessionID: cardID, text: question)
+            return
+        }
+        guard let card = AppDatabase.fetchCard(id: cardID) else {
+            logger.error("ask card failed: card not found card=\(cardID.uuidString, privacy: .public)")
+            throw SessionCoordinatorError.sessionNotFound
+        }
+        guard !isCardBusy(id: cardID) else {
+            logger.notice("ask card ignored: card busy card=\(cardID.uuidString, privacy: .public)")
+            throw SessionCoordinatorError.followUpFailed("这张卡片正在整理，稍后再问")
+        }
+        let session = AskSession(id: cardID, screenshotPath: card.screenshotPath)
+        session.statusValue = .answered
+        // 没有快速回答可以深化：不自动做深度回答，只走提问。
+        session.needsDeepAnswer = false
+        AppDatabase.context.insert(session)
+        card.session = session
+        guard AppDatabase.save(reason: "card session created card=\(cardID.uuidString)") else {
+            AppDatabase.context.delete(session)
+            throw SessionCoordinatorError.followUpFailed("保存失败，请重试")
+        }
+        logger.info(
+            "ask card: session created card=\(cardID.uuidString, privacy: .public) origin=\(card.origin, privacy: .public)"
+        )
+        do {
+            try await askFollowUp(sessionID: cardID, text: question)
+        } catch {
+            if let created = AppDatabase.fetchSession(id: cardID), created.messages.isEmpty {
+                AppDatabase.context.delete(created)
+                AppDatabase.save(reason: "card session rollback card=\(cardID.uuidString)")
+                logger.info("ask card: session rolled back card=\(cardID.uuidString, privacy: .public)")
+            }
+            throw error
+        }
+    }
+
     /// 深度回答和追问共用：压缩截图 → 开流 → 片段写进 reply。在主线程迭代，reply 是主线程对象。
     static func consumeDeepStream(
         into reply: StreamingReply,
         sessionID: UUID,
         screenshotURL: URL?,
         screenText: String?,
+        cardContext: String?,
         question: String,
         history: [LLMTurn]
     ) async throws {
@@ -204,6 +252,7 @@ extension SessionCoordinator {
         let stream = provider.streamDeepAnswer(
             imageJPEG: imageJPEG,
             screenText: screenText,
+            cardContext: cardContext,
             question: question,
             history: history
         )

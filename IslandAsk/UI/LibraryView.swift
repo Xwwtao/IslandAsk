@@ -3,7 +3,9 @@
 //  IslandAsk
 //
 //  收藏库（M-C1，SPEC 第 6.12 节），替换原来的历史列表作为首页：
-//  - 顶部分段「全部 / 收藏」（记住上次的选择），下面一行类型筛选；可搜索标题、摘要、标签、关键信息、翻译和问答。
+//  - 顶部分段「全部 / 收藏」（记住上次的选择），下面一行类型筛选；可搜索标题、摘要、标签、关键信息、翻译、OCR 文字和问答。
+//  - M-C3 AI 搜索和普通搜索合在一起，没有单独的入口：回车时本地没匹配到或输入像一句话，自动按意思再搜一次。
+//    结果作为「最相关」一组排在最前，本地结果里去掉重复的卡片；失败时只留本地结果。
 //  - 按「今天 / 昨天 / 更早」分组。每条显示截图缩略图、标题、摘要或状态、类型和标签、时间、收藏标记。
 //  - 点进卡片详情（复用会话页）；左滑删除；长按菜单里有「选择」，点了进入多选并选中这张。
 //  - 多选：右上角「选择」进入。顶部「已选 N 项」+ 全选，底部工具栏收藏 / 加标签 / 删除（删除前确认）。
@@ -44,6 +46,7 @@ struct LibraryView: View {
     @AppStorage("library.segment") private var segment: Segment = .all
     @State private var typeFilter: CardType?
     @State private var searchText = ""
+    @State private var aiSearch = AISearchModel()
     @State private var showsShortcutGuide = false
 
     // 多选
@@ -79,7 +82,21 @@ struct LibraryView: View {
             .animation(.snappy, value: ClipboardLinkDetector.shared.state)
             .navigationTitle(isSelecting ? selectionTitle : "IslandAsk")
             .navigationBarTitleDisplayMode(isSelecting ? .inline : .automatic)
-            .searchable(text: $searchText, prompt: "搜索标题、标签或内容")
+            .searchable(text: $searchText, prompt: "搜索，比如「上个月存的咖啡店」")
+            .onSubmit(of: .search) {
+                guard NaturalLanguageSearch.shouldAutoRun(query: searchText, localResultCount: textMatchedCards.count) else { return }
+                logger.info("library: ai search auto on submit chars=\(searchText.count, privacy: .public)")
+                runAISearch()
+            }
+            .onChange(of: searchText) { _, text in
+                // 搜索词变了：作废旧的 AI 结果，取消进行中的请求。
+                if aiSearch.query != text.trimmingCharacters(in: .whitespacesAndNewlines) {
+                    aiSearch.reset()
+                }
+            }
+            // 换了分段或类型筛选：候选变了，按新范围重搜（之前回车搜过的话）。
+            .onChange(of: segment) { rerunAISearchIfNeeded() }
+            .onChange(of: typeFilter) { rerunAISearchIfNeeded() }
             .toolbar { toolbarContent }
             .environment(\.editMode, $editMode)
             .navigationDestination(for: AppRoute.self) { route in
@@ -148,7 +165,10 @@ struct LibraryView: View {
                     .listRowBackground(Color.clear)
                     .selectionDisabled()
             }
-            if visibleCards.isEmpty {
+            if showsAISearch, !aiResultCards.isEmpty {
+                aiResultsSection
+            }
+            if textMatchedCards.isEmpty, !hidesLocalEmptyState {
                 Section {
                     filteredEmptyState
                         .listRowBackground(Color.clear)
@@ -165,6 +185,64 @@ struct LibraryView: View {
         }
         .listStyle(.insetGrouped)
         .animation(.default, value: isSelecting)
+    }
+
+    // MARK: - AI 搜索
+
+    private var showsAISearch: Bool {
+        !isSelecting && !CardSearchQuery(searchText).isEmpty
+    }
+
+    /// AI 已有结果时，本地「没有匹配」的空状态不再显示。正在搜时由 filteredEmptyState 显示「正在搜索…」。
+    private var hidesLocalEmptyState: Bool {
+        guard showsAISearch, aiSearch.isCurrent(for: searchText) else { return false }
+        switch aiSearch.phase {
+        case .searching: return false
+        case .results(let ids): return !ids.isEmpty
+        case .idle, .failed: return false
+        }
+    }
+
+    /// AI 结果对应的卡片（按模型给的相关度排序），已删除的跳过。
+    private var aiResultCards: [Card] {
+        // 多选时 AI 分组不显示，结果卡片回到本地分组里（否则会从列表里消失）。
+        guard showsAISearch, aiSearch.isCurrent(for: searchText), case .results(let ids) = aiSearch.phase else { return [] }
+        let byID = Dictionary(cards.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        return ids.compactMap { byID[$0] }.filter { !$0.isGone }
+    }
+
+    private var aiResultsSection: some View {
+        Section {
+            ForEach(aiResultCards) { card in
+                row(card)
+            }
+        } header: {
+            Text("最相关")
+        }
+    }
+
+    /// 候选是当前分段和类型筛选下的卡片（不按搜索词过滤），按时间倒序取前 200 张。
+    /// 搜索结果里要高亮的关键字（M-C3）。搜索框为空时没有关键字，行按原样显示。
+    private var highlightQuery: CardSearchQuery {
+        CardSearchQuery(searchText)
+    }
+
+    private func runAISearch() {
+        aiSearch.search(searchText, in: filteredCards)
+    }
+
+    private func rerunAISearchIfNeeded() {
+        guard aiSearch.isCurrent(for: searchText) else {
+            aiSearch.reset()
+            return
+        }
+        logger.info("library: ai search rerun after filter change")
+        aiSearch.reset()
+        runAISearch()
+    }
+
+    private var isAISearching: Bool {
+        showsAISearch && aiSearch.isCurrent(for: searchText) && aiSearch.phase == .searching
     }
 
     /// 收藏库最上方的剪贴板提示条；「已收藏过」时点开对应卡片。
@@ -189,7 +267,7 @@ struct LibraryView: View {
         // TODO: 核对官方文档：iOS 26 上 List(selection:) + editMode 时，非编辑状态下 NavigationLink(value:) 仍正常 push，
         // 编辑状态下点行只切换选中，需真机确认。
         NavigationLink(value: AppRoute.session(card.id)) {
-            CardRow(card: card)
+            CardRow(card: card, highlight: highlightQuery)
         }
         .tag(card.id)
         .selectionDisabled(card.isBusy)
@@ -308,22 +386,35 @@ struct LibraryView: View {
 
     // MARK: - 筛选、搜索、分组
 
-    private var visibleCards: [Card] {
-        let query = CardSearchQuery(searchText)
-        return cards.filter { card in
+    /// 按分段和类型筛选，不看搜索词。
+    private var filteredCards: [Card] {
+        cards.filter { card in
             if segment == .saved, !card.isSavedValue { return false }
             if let typeFilter, card.cardTypeValue != typeFilter { return false }
-            guard !query.isEmpty else { return true }
-            return query.matches(texts: Self.searchableTexts(of: card), tags: card.tags ?? [])
+            return true
         }
     }
 
+    /// 再按搜索词做本地匹配。
+    private var textMatchedCards: [Card] {
+        let query = CardSearchQuery(searchText)
+        guard !query.isEmpty else { return filteredCards }
+        return filteredCards.filter { query.matches(texts: $0.searchableTexts, tags: $0.tags ?? []) }
+    }
+
+    /// 本地结果分组用的卡片：去掉已在 AI 结果里的（AI 结果单独一组排在最前，同一张卡片不出现两次）。
+    private var localSectionCards: [Card] {
+        let aiIDs = Set(aiResultCards.map(\.id))
+        guard !aiIDs.isEmpty else { return textMatchedCards }
+        return textMatchedCards.filter { !aiIDs.contains($0.id) }
+    }
+
     private var visibleCardIDs: Set<UUID> {
-        Set(visibleCards.map(\.id))
+        Set((aiResultCards + localSectionCards).map(\.id))
     }
 
     private var selectableVisibleIDs: Set<UUID> {
-        Set(visibleCards.filter { !$0.isBusy }.map(\.id))
+        Set((aiResultCards + localSectionCards).filter { !$0.isBusy }.map(\.id))
     }
 
     private var allVisibleSelected: Bool {
@@ -344,17 +435,6 @@ struct LibraryView: View {
         return cards.flatMap { $0.tags ?? [] }.filter { seen.insert($0).inserted }
     }
 
-    private static func searchableTexts(of card: Card) -> [String] {
-        var texts = [card.title, card.summary, card.note, card.translation, card.sourceTitle, card.sourcePlatform]
-            .compactMap { $0 }
-        texts += card.tags ?? []
-        texts += card.keyInfo.flatMap { [$0.label, $0.value] }
-        if let session = card.session {
-            texts += [session.transcript, session.answer, session.deepAnswer].compactMap { $0 }
-        }
-        return texts
-    }
-
     private struct CardGroup {
         let title: String
         let cards: [Card]
@@ -365,7 +445,7 @@ struct LibraryView: View {
         var today: [Card] = []
         var yesterday: [Card] = []
         var earlier: [Card] = []
-        for card in visibleCards {
+        for card in localSectionCards {
             if calendar.isDateInToday(card.createdAt) {
                 today.append(card)
             } else if calendar.isDateInYesterday(card.createdAt) {
@@ -401,7 +481,12 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var filteredEmptyState: some View {
-        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if isAISearching {
+            // 本地没匹配到、正在按意思搜：先显示进度，不急着说「无结果」。
+            ProgressView("正在搜索…")
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 40)
+        } else if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             ContentUnavailableView.search(text: searchText)
         } else if segment == .saved {
             ContentUnavailableView(
@@ -446,6 +531,18 @@ extension Card {
 private struct CardRow: View {
 
     let card: Card
+    /// M-C3：命中的关键字在标题、摘要、标签里高亮；只在附注、OCR、回答等不显示的文字里命中时，摘要换成命中的那一小段。
+    var highlight = CardSearchQuery("")
+
+    /// 普通关键字（匹配全部文字）。
+    private var textTerms: [String] {
+        highlight.terms.filter { !$0.tagOnly }.map(\.text)
+    }
+
+    /// 标签行用：#标签 和普通关键字都会匹配标签。
+    private var tagTerms: [String] {
+        highlight.terms.map(\.text)
+    }
 
     var body: some View {
         if !card.isGone {
@@ -462,7 +559,7 @@ private struct CardRow: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
-                    Text(card.displayTitle)
+                    Text(highlighted(card.displayTitle, terms: textTerms))
                         .font(.subheadline.weight(.semibold))
                         .lineLimit(2)
                     Spacer(minLength: 0)
@@ -473,7 +570,7 @@ private struct CardRow: View {
                             .accessibilityLabel("已收藏")
                     }
                 }
-                if let detail = detailText {
+                if let detail = detailContent {
                     Text(detail)
                         .font(.footnote)
                         .foregroundStyle(isFailed ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
@@ -499,7 +596,7 @@ private struct CardRow: View {
             .fixedSize()
 
             if let tagsText {
-                Text(tagsText)
+                Text(highlighted(tagsText, terms: tagTerms))
                     .lineLimit(1)
                     .truncationMode(.tail)
             }
@@ -518,7 +615,13 @@ private struct CardRow: View {
     }
 
     private var tagsText: String? {
-        let tags = (card.tags ?? []).prefix(3)
+        // 搜索时命中的标签排到前面，免得排在第 4 个以后或被截断，看不到高亮。
+        let all = card.tags ?? []
+        let terms = tagTerms
+        let ordered = terms.isEmpty
+            ? all
+            : all.filter { SearchHighlighter.contains(terms, in: $0) } + all.filter { !SearchHighlighter.contains(terms, in: $0) }
+        let tags = ordered.prefix(3)
         guard !tags.isEmpty else { return nil }
         return tags.map { "#\($0)" }.joined(separator: " ")
     }
@@ -527,7 +630,50 @@ private struct CardRow: View {
         card.session?.statusValue == .failed || card.organizeStatusValue == .failed
     }
 
-    private var detailText: String? {
+    /// 第二行：进行中、失败的状态说明照常显示；否则显示摘要（命中的关键字高亮）。
+    /// 搜索时标题和摘要里都没有命中，就换成命中的那一小段，让用户知道为什么搜到这张卡片。
+    private var detailContent: AttributedString? {
+        if let status = statusText {
+            return AttributedString(status)
+        }
+        let terms = textTerms
+        let summary = card.summary ?? ""
+        guard !terms.isEmpty, !SearchHighlighter.contains(terms, in: card.displayTitle) else {
+            return summary.isEmpty ? nil : highlighted(summary, terms: terms)
+        }
+        // 摘要只显示两行：命中处太靠后会被截掉，改显示命中处前后的一段。
+        if let hit = SearchHighlighter.ranges(of: terms, in: summary).first {
+            if summary.distance(from: summary.startIndex, to: hit.lowerBound) <= Self.visibleSummaryLead {
+                return highlighted(summary, terms: terms)
+            }
+            if let snippet = SearchHighlighter.snippet(in: [summary], terms: terms) {
+                return highlighted(snippet, terms: terms)
+            }
+        }
+        if let snippet = SearchHighlighter.snippet(in: card.hiddenSearchTexts, terms: terms) {
+            return highlighted(snippet, terms: terms)
+        }
+        return summary.isEmpty ? nil : highlighted(summary, terms: terms)
+    }
+
+    /// 摘要两行大约能显示的字数；命中处在这之后就改显示片段。偏保守，宁可多显示片段。
+    private static let visibleSummaryLead = 20
+
+    /// 命中的部分加淡黄底色、加粗，和系统「信息」「邮件」的搜索高亮相近。
+    private func highlighted(_ text: String, terms: [String]) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard !terms.isEmpty else { return attributed }
+        for range in SearchHighlighter.ranges(of: terms, in: text) {
+            guard let attributedRange = Range(range, in: attributed) else { continue }
+            attributed[attributedRange].backgroundColor = Color.yellow.opacity(0.4)
+            attributed[attributedRange].foregroundColor = Color.primary
+            attributed[attributedRange].inlinePresentationIntent = .stronglyEmphasized
+        }
+        return attributed
+    }
+
+    /// 进行中、失败、待整理时的状态说明；正常卡片返回 nil。
+    private var statusText: String? {
         if let session = card.session {
             switch session.statusValue {
             case .listening: return "正在听…"
@@ -545,7 +691,7 @@ private struct CardRow: View {
             }
         }
         if card.organizeStatusValue == .failed { return "整理失败" }
-        return card.summary
+        return nil
     }
 
     @ViewBuilder
@@ -710,40 +856,5 @@ struct ScreenshotThumbnail: View {
     @concurrent
     private static func loadThumbnail(url: URL, maxPixelSize: Int) async -> UIImage? {
         ScreenshotStore.thumbnail(url: url, maxPixelSize: maxPixelSize)
-    }
-}
-
-// MARK: - 搜索
-
-/// 收藏库搜索词。按空白拆成多个词，每个词都要匹配（AND）：
-/// - 以 # 或 ＃ 开头的词只匹配标签（标签存的时候不带 #，界面上显示成 #标签），如「#漫威」。
-/// - 其他词匹配标题、摘要、标签、附注、关键信息、问答等全部文字。
-/// 单独一个 # 忽略。匹配不区分大小写和全半角（localizedStandardContains）。
-nonisolated struct CardSearchQuery: Equatable {
-
-    struct Term: Equatable {
-        let text: String
-        let tagOnly: Bool
-    }
-
-    let terms: [Term]
-
-    init(_ raw: String) {
-        terms = raw
-            .split(whereSeparator: \.isWhitespace)
-            .compactMap { word in
-                let tagOnly = word.first == "#" || word.first == "＃"
-                let text = String(word.drop { $0 == "#" || $0 == "＃" })
-                return text.isEmpty ? nil : Term(text: text, tagOnly: tagOnly)
-            }
-    }
-
-    var isEmpty: Bool { terms.isEmpty }
-
-    func matches(texts: [String], tags: [String]) -> Bool {
-        terms.allSatisfy { term in
-            let pool = term.tagOnly ? tags : texts
-            return pool.contains { $0.localizedStandardContains(term.text) }
-        }
     }
 }

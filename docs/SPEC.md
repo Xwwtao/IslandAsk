@@ -110,6 +110,7 @@ IslandAsk/                           // 主 App target
 │   ├── LinkImageStore.swift         // （M-C2 补充）链接封面图、网站图标的下载、缩小与存储
 │   ├── ShareInbox.swift             // （M-C2）App Group inbox 读写；同时属于 IslandAskShare target
 │   ├── ClipboardLinkDetector.swift  // （M-C2）剪贴板入口：检测剪贴板里是否有链接（不读内容）
+│   ├── CardSearch.swift             // （M-C3）本地搜索词、自然语言搜索的候选与结果解析、AI 搜索状态
 │   └── SpotlightIndexer.swift       // （M-C3）Core Spotlight 索引
 ├── Shared/                          // 两个 target 共享（在 pbxproj 里逐个文件登记）
 │   ├── AskActivityAttributes.swift  // 含深链 URL 辅助函数
@@ -310,6 +311,8 @@ struct StopAskIntent: LiveActivityIntent {
     func organizeShareCard(id: UUID, metadataTimeout: Duration, allowRetry: Bool) async -> Bool
     func importShareInbox() -> Int                             // 导入分享扩展写入的 inbox：只建卡，返回新建数
     func saveClipboardText(_ text: String) async -> SaveClipboardResult   // 剪贴板提示条的「收藏」；同链接已有卡片时不新建
+    // M-C3 起
+    func askAboutCard(cardID: UUID, text: String) async throws  // 卡片详情底部提问；没有会话的卡片先建同 id 会话
 }
 ```
 
@@ -382,8 +385,10 @@ protocol LLMProvider: Sendable {
     // M-C2 链接整理：不带图的快速档，intent 固定 collect；allowRetry = false 时不重试（Intent 链路有时限）
     func organizeLink(url: URL?, pageTitle: String?, pageDescription: String?, pageExcerpt: String?,
                       sharedText: String?, coverJPEG: Data?, allowRetry: Bool) async throws -> LLMAnswer
-    // 深度档：会话页和追问用
-    func streamDeepAnswer(imageJPEG: Data?, screenText: String?, question: String, history: [LLMTurn]) -> AsyncThrowingStream<LLMStreamEvent, Error>
+    // M-C3 自然语言搜索：不带图的快速档，返回相关候选的序号（相关度从高到低）
+    func searchCards(query: String, candidates: [CardSearchCandidate], today: Date) async throws -> [Int]
+    // 深度档：会话页和追问用。cardContext（M-C3）：没有截图的卡片（链接、文字收藏）的卡片信息
+    func streamDeepAnswer(imageJPEG: Data?, screenText: String?, cardContext: String?, question: String, history: [LLMTurn]) -> AsyncThrowingStream<LLMStreamEvent, Error>
 }
 ```
 
@@ -441,6 +446,33 @@ card.translation：截图主要内容不是中文时，给出中文翻译，最�
 直接输出回答正文，使用 Markdown（可用标题、列表、粗体），不要输出 JSON，不要寒暄。
 如果截图与问题无关或看不清，直接说明。
 ```
+
+**深度档：对没有截图的卡片提问（M-C3）**
+
+- 链接、文字收藏卡片没有截图，`cardContext` 带上卡片信息（标题、类型、收藏时间、来源、链接、标签、摘要、附注、关键信息、翻译），挂在第一条 user 消息上。
+- 只有卡片信息、没有截图时，系统提示词换成：
+
+```
+你是收藏助手。用户收藏了一条内容（链接或一段文字），第一条消息里附有这张收藏卡片的信息：标题、摘要、附注、关键信息、来源链接等。网页正文没有保存，只有整理后的摘要。
+请结合卡片信息回答用户的问题。卡片信息不足以回答时直接说明，可以给出基于常识的建议，但不要编造卡片里没有的具体事实。
+直接输出回答正文，使用 Markdown（可用标题、列表、粗体），不要输出 JSON，不要寒暄。
+```
+
+**自然语言搜索（M-C3）**
+
+- 不流式（输出只有几个序号），`thinking: disabled`，`response_format: json_object`，`max_tokens: 512`，超时 15 秒，不重试。
+- user 消息：今天的日期和星期、查找需求、候选列表（每行「序号 | 收藏日期 | 类型 | 标题 | 标签 | 摘要首句」）。
+- 系统提示词：
+
+```
+你是收藏库检索助手。用户会给你一句查找需求和一份收藏卡片列表，每行一张，格式为：序号 | 收藏日期 | 类型 | 标题 | 标签 | 摘要。
+需求里的「上个月」「上周」「前几天」「去年」等时间，按用户给出的今天日期换算，再按收藏日期筛选。
+找出与需求最相关的卡片，按相关度从高到低排列，最多 10 张。需求里提到的时间范围、类型、地点等条件都要满足；没有相关的卡片就返回空数组，不要硬凑。
+只输出 JSON，ids 是卡片的序号：
+{"ids": [3, 17]}
+```
+
+- 解析：序号可以是数字或数字字符串；越界、重复的丢掉，最多 10 个。
 
 ### 6.10 Live Activity（AskActivityAttributes + AskLiveActivity）
 
@@ -667,10 +699,17 @@ struct SaveLinkIntent: AppIntent {
 
 ### 6.14 检索与找回（M-C3）
 
-- 本地搜索：在标题、摘要、标签、附注、OCR 文字、转录文字、翻译、关键信息中做文本包含匹配。收藏库的搜索框已先实现（M-C2 时修复）：按空白拆词，每个词都要匹配；以 `#` 或 `＃` 开头的词只匹配标签（标签存储时不带 #）。卡片详情里点标签回到收藏库，搜索框填入「#标签」，同时切到「全部」、清掉类型筛选。
-- 自然语言搜索：用户输入的是一句话、或本地匹配为空时，把查询和最近 200 张卡片的「id + 标题 + 类型 + 标签 + 摘要首句」发给快速档，让模型返回最相关的卡片 id 列表（JSON）。只在前台调用。
-- Core Spotlight：卡片创建、整理完成、编辑、删除时同步 `CSSearchableItem`（标题、摘要、标签、缩略图），点击打开 `islandask://card/<id>`。
-- 对卡片提问：卡片详情底部加输入框。还没有会话的卡片（如分享得到的）首次提问时创建关联的 `AskSession`，之后同现有追问（深度档流式）。
+- 本地搜索：在标题、摘要、标签、附注、OCR 文字、转录文字、翻译、关键信息中做文本包含匹配（另含来源平台、来源标题、链接和问答）。收藏库的搜索框已先实现（M-C2 时修复）：按空白拆词，每个词都要匹配；以 `#` 或 `＃` 开头的词只匹配标签（标签存储时不带 #）。卡片详情里点标签回到收藏库，搜索框填入「#标签」，同时切到「全部」、清掉类型筛选。
+- 关键字高亮（M-C3）：搜索结果的标题、摘要、标签里，命中的关键字加淡黄底色并加粗（`#标签` 只在标签里高亮）。标题和摘要里都没有命中时，摘要换成命中处前后的一小段（来自附注、关键信息、转录、回答、OCR 文字、翻译、来源），让用户知道为什么搜到这张卡片。
+- 自然语言搜索：只在前台调用，提示词和请求参数见 6.9。
+  - 触发：和普通搜索合在一起，没有单独的按钮。按回车时，本地匹配为空，或输入像一句话（不含 `#标签`，中文至少 6 个字，或至少 3 个词），自动按意思再搜一次。不逐字触发。
+  - 候选：当前分段和类型筛选下最近 200 张卡片，每张发「序号 + 收藏日期 + 类型 + 标题 + 标签 + 摘要首句」，user 消息里带今天的日期。用本地序号代替卡片 id（省 token，模型也不会抄错）；带日期是为了理解「上个月」这类说法。模型返回序号列表，本地换回卡片。
+  - 显示：结果作为「最相关」一组排在最前，本地结果里去掉重复的卡片。本地没匹配到时，搜索中显示「正在搜索…」，没找到再显示无结果；失败时只留本地结果（记日志，不提示）。搜索词变了就作废旧结果；换了分段或类型筛选，按新范围重搜。
+- Core Spotlight：收藏库「全部」里的卡片都索引（含没收藏的提问卡片），卡片创建、整理完成、编辑、删除（含过期清理）时同步 `CSSearchableItem`（标题、摘要、标签和类型作为关键词、缩略图：截图 → 封面图 → 网站图标），不过期。
+  - 同步入口统一在 `AppDatabase.save`：保存前收集这次插入、修改、删除的卡片，保存成功后合并 1 秒内的改动再写索引。
+  - 第一次运行（或索引格式版本号变了）时，回到前台全量重建一次：延后 5 秒、后台低优先级进行，主线程上只分批（每批 20 张）读卡片字段，生成缩略图和写索引都在主线程之外，不影响启动和滑动。
+  - 点开系统搜索结果：系统以 `CSSearchableItemActionType` 的 `NSUserActivity` 打开 App（不经过 URL），按 `islandask://card/<id>` 同样的路由进入卡片详情。
+- 对卡片提问：所有卡片的详情底部都有输入框（收藏卡片、分享卡片也有）。还没有会话的卡片（如分享得到的）首次提问时创建同 id 的 `AskSession`（status = answered，不自动做深度回答），首次提问失败时连同会话一起撤回；之后同现有追问（深度档流式）。没有截图的卡片把卡片信息作为上下文（见 6.9）。分享卡片正在整理时不能提问。
 
 ### 6.15 Agent 工具调用（M-C4）
 

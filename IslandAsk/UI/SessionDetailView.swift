@@ -11,7 +11,9 @@
 //  回答分两档：灵动岛用的快速回答先显示；needs_deep 不为 false 时打开本页自动用深度思考流式生成长回答，
 //  流式中的内容来自 StreamingReplyStore，结束后落库。失败且有问题文字的会话显示「重新提问」（SPEC 第 8 节）。
 //  M-C1：本页同时是卡片详情（卡片与会话同 id）。截图下面是卡片信息（CardInfoSection）；工具栏可收藏、编辑、删除。
-//  收藏卡片（intent = collect）不显示摘要卡、问答和追问输入框，只显示内容摘要；整理失败时显示「重新整理」。
+//  收藏卡片（intent = collect）不显示摘要卡和问答，只显示内容摘要；整理失败时显示「重新整理」。
+//  M-C3：所有卡片底部都有输入框（SessionCoordinator.askAboutCard）。分享卡片首次提问时才建会话，
+//  提问记录接在卡片内容下面；收藏卡片的提问记录接在内容摘要下面。
 //
 
 import SwiftData
@@ -63,16 +65,22 @@ struct SessionDetailView: View {
         return "会话"
     }
 
-    /// 收藏卡片：不做深度回答、不显示问答和追问。
+    /// 收藏卡片：不做深度回答、不显示问答（M-C3 起可以对它提问）。
     private var isCollect: Bool { card?.intentValue == .collect }
+
+    /// 分享得到的卡片（链接、文字）：用卡片内容做时间线开头，会话只在提问后才有。
+    private var isShareCard: Bool {
+        guard let card, !card.isGone else { return false }
+        return card.originValue == .share
+    }
 
     var body: some View {
         Group {
-            if let session = sessions.first {
+            if isShareCard, let card {
+                // M-C2：分享得到的卡片显示卡片信息；M-C3：下面接对卡片的提问。
+                shareContent(card)
+            } else if let session = sessions.first {
                 content(session)
-            } else if let card, !card.isGone {
-                // M-C2：分享得到的卡片没有会话，只显示卡片信息。
-                LinkCardContent(card: card)
             } else {
                 ContentUnavailableView("找不到这条会话", systemImage: "questionmark.bubble")
             }
@@ -132,7 +140,7 @@ struct SessionDetailView: View {
         } message: {
             Text("截图和录音也会一起删除")
         }
-        .alert("追问失败", isPresented: $followUpError.isPresented, presenting: followUpError) { _ in
+        .alert(isShareCard || isCollect ? "提问失败" : "追问失败", isPresented: $followUpError.isPresented, presenting: followUpError) { _ in
             Button("好", role: .cancel) {}
         } message: { error in
             Text(error.message)
@@ -171,9 +179,7 @@ struct SessionDetailView: View {
                             cancelledSpeculativeRequests: session.timing?.cancelledSpeculativeRequests ?? 0
                         )
                     }
-                    if !isCollect {
-                        followUpSection(session)
-                    }
+                    followUpSection(session)
                     Color.clear.frame(height: 1).id(bottomAnchor)
                 }
                 .padding(Theme.Spacing.page)
@@ -186,9 +192,37 @@ struct SessionDetailView: View {
                 withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
             }
             .safeAreaInset(edge: .bottom) {
-                if session.statusValue == .answered, !isCollect {
-                    inputBar(session)
+                if session.statusValue == .answered {
+                    inputBar(placeholder: isCollect ? "问问这张卡片…" : "继续追问这张截图…", isDisabled: false)
                 }
+            }
+        }
+    }
+
+    /// 分享卡片的时间线：卡片内容 + 提问记录，底部输入框。整理进行中不能提问（卡片内容还没定）。
+    private func shareContent(_ card: Card) -> some View {
+        let session = sessions.first
+        let isOrganizing = LinkOrganizeStore.shared.organizingCardIDs.contains(card.id)
+        return ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: Theme.Spacing.section) {
+                    LinkCardContent(card: card)
+                    if let session {
+                        followUpSection(session)
+                    }
+                    Color.clear.frame(height: 1).id(bottomAnchor)
+                }
+                .padding(Theme.Spacing.page)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            .onChange(of: session?.messages.count) {
+                withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+            }
+            .onChange(of: isSending) {
+                withAnimation { proxy.scrollTo(bottomAnchor, anchor: .bottom) }
+            }
+            .safeAreaInset(edge: .bottom) {
+                inputBar(placeholder: isOrganizing ? "整理完成后可以提问" : "问问这张卡片…", isDisabled: isOrganizing)
             }
         }
     }
@@ -337,22 +371,22 @@ struct SessionDetailView: View {
         }
     }
 
-    private func inputBar(_ session: AskSession) -> some View {
+    private func inputBar(placeholder: String, isDisabled: Bool) -> some View {
         let isBusy = isSending || liveReply != nil
-        let canSend = !isBusy && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let canSend = !isBusy && !isDisabled && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return GlassEffectContainer(spacing: 8) {
             HStack(alignment: .bottom, spacing: 8) {
-                TextField(isBusy ? "正在回答…" : "继续追问这张截图…", text: $draft, axis: .vertical)
+                TextField(isBusy ? "正在回答…" : placeholder, text: $draft, axis: .vertical)
                     .lineLimit(1...5)
                     .focused($inputFocused)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 11)
                     .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
-                    .disabled(isBusy)
+                    .disabled(isBusy || isDisabled)
                 Button {
-                    send(session)
+                    send()
                 } label: {
-                    Label("发送追问", systemImage: isBusy ? "ellipsis" : "arrow.up")
+                    Label("发送", systemImage: isBusy ? "ellipsis" : "arrow.up")
                         .labelStyle(.iconOnly)
                         .bold()
                         .symbolEffect(.variableColor.iterative, options: .repeating, isActive: isBusy)
@@ -429,16 +463,18 @@ struct SessionDetailView: View {
 
     // MARK: - 动作
 
-    private func send(_ session: AskSession) {
+    private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !isSending else { return }
-        let id = session.id
+        let id = sessionID
         draft = ""
         isSending = true
+        logger.info("card detail ask card=\(id.uuidString, privacy: .public) chars=\(text.count, privacy: .public)")
         Task {
             defer { isSending = false }
             do {
-                try await SessionCoordinator.shared.askFollowUp(sessionID: id, text: text)
+                // 卡片与会话同 id；还没有会话的卡片（分享得到的）由 askAboutCard 先建会话。
+                try await SessionCoordinator.shared.askAboutCard(cardID: id, text: text)
             } catch {
                 // 失败时 coordinator 已撤回这条 user 消息；把文字放回输入框方便重发。
                 draft = text

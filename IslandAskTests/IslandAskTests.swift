@@ -712,6 +712,107 @@ struct CardSearchQueryTests {
     }
 }
 
+// MARK: - 关键字高亮（M-C3）
+
+struct SearchHighlighterTests {
+
+    @Test func findsAllOccurrencesCaseAndWidthInsensitive() {
+        let text = "Manner咖啡，ｍａｎｎｅｒ 静安店"
+        let ranges = SearchHighlighter.ranges(of: ["manner"], in: text)
+        #expect(ranges.map { String(text[$0]) } == ["Manner", "ｍａｎｎｅｒ"])
+    }
+
+    @Test func multipleTermsSortedWithoutOverlap() {
+        let text = "上海咖啡店推荐"
+        let ranges = SearchHighlighter.ranges(of: ["咖啡店", "咖啡", "上海"], in: text)
+        #expect(ranges.map { String(text[$0]) } == ["上海", "咖啡店"])
+    }
+
+    @Test func snippetAroundFirstHit() {
+        let long = String(repeating: "甲", count: 30) + "关键字" + String(repeating: "乙", count: 50)
+        let snippet = SearchHighlighter.snippet(in: ["无关", long], terms: ["关键字"], radius: 4)
+        #expect(snippet == "…甲甲甲甲关键字乙乙乙乙乙乙乙乙…")
+        #expect(SearchHighlighter.snippet(in: ["无关"], terms: ["关键字"]) == nil)
+    }
+
+    @Test func snippetWithoutEllipsisWhenShort() {
+        #expect(SearchHighlighter.snippet(in: ["第一行\n有关键字"], terms: ["关键字"]) == "第一行 有关键字")
+    }
+}
+
+// MARK: - 自然语言搜索（M-C3）
+
+struct NaturalLanguageSearchTests {
+
+    private var calendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return calendar
+    }
+
+    private func date(_ year: Int, _ month: Int, _ day: Int) -> Date {
+        calendar.date(from: DateComponents(year: year, month: month, day: day, hour: 12))!
+    }
+
+    @Test func sentenceDetection() {
+        #expect(NaturalLanguageSearch.looksLikeSentence("上个月存的那家咖啡店"))
+        #expect(!NaturalLanguageSearch.looksLikeSentence("咖啡店"))
+        #expect(!NaturalLanguageSearch.looksLikeSentence("#咖啡 上个月存的那家店"))
+        #expect(NaturalLanguageSearch.looksLikeSentence("coffee shop from last month"))
+        #expect(!NaturalLanguageSearch.looksLikeSentence("coffee shop"))
+    }
+
+    @Test func autoRunWhenNoLocalMatchOrSentence() {
+        #expect(NaturalLanguageSearch.shouldAutoRun(query: "咖啡", localResultCount: 0))
+        #expect(!NaturalLanguageSearch.shouldAutoRun(query: "咖啡", localResultCount: 3))
+        #expect(NaturalLanguageSearch.shouldAutoRun(query: "上个月存的那家咖啡店", localResultCount: 3))
+        #expect(!NaturalLanguageSearch.shouldAutoRun(query: "  ", localResultCount: 0))
+    }
+
+    @Test func summaryLeadTakesFirstSentence() {
+        #expect(NaturalLanguageSearch.summaryLead("一家安静的咖啡店。人均 40 元。") == "一家安静的咖啡店")
+        #expect(NaturalLanguageSearch.summaryLead(nil) == "")
+        let long = String(repeating: "长", count: 60)
+        #expect(NaturalLanguageSearch.summaryLead(long) == String(repeating: "长", count: 40) + "…")
+    }
+
+    @Test func candidateLinesFormat() {
+        let candidate = CardSearchCandidate(
+            index: 3,
+            cardID: UUID(),
+            createdAt: date(2026, 10, 12),
+            type: "地点",
+            title: "Manner | 静安店",
+            tags: ["咖啡", "探店"],
+            summaryLead: ""
+        )
+        let lines = NaturalLanguageSearch.candidateLines([candidate], calendar: calendar)
+        #expect(lines == "3 | 2026-10-12 | 地点 | Manner / 静安店 | #咖啡 #探店 | 无")
+    }
+
+    @Test func todayTextHasWeekday() {
+        #expect(NaturalLanguageSearch.todayText(date(2026, 11, 7), calendar: calendar) == "2026-11-07（星期六）")
+    }
+
+    @Test func parsesIndicesDroppingInvalid() throws {
+        let content = "```json\n{\"ids\": [3, \"5\", 3, 0, 99, -1, \"x\", 2]}\n```"
+        #expect(try NaturalLanguageSearch.parseIndices(content, candidateCount: 10) == [3, 5, 2])
+        #expect(try NaturalLanguageSearch.parseIndices(#"{"ids": []}"#, candidateCount: 10) == [])
+    }
+
+    @Test func capsResultCount() throws {
+        let ids = (1...30).map(String.init).joined(separator: ",")
+        let result = try NaturalLanguageSearch.parseIndices("{\"ids\": [\(ids)]}", candidateCount: 30)
+        #expect(result == Array(1...NaturalLanguageSearch.maxResults))
+    }
+
+    @Test func rejectsMalformedResponse() {
+        #expect(throws: LLMError.self) { try NaturalLanguageSearch.parseIndices("没有结果", candidateCount: 5) }
+        #expect(throws: LLMError.self) { try NaturalLanguageSearch.parseIndices(#"{"result": [1]}"#, candidateCount: 5) }
+        #expect(throws: LLMError.self) { try NaturalLanguageSearch.parseIndices(#"{"ids": 1}"#, candidateCount: 5) }
+    }
+}
+
 struct NetworkAddressPolicyTests {
 
     @Test func flagsPrivateAndLocalHosts() {

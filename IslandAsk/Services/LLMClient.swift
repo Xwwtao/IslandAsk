@@ -216,10 +216,16 @@ nonisolated protocol LLMProvider: Sendable {
         coverJPEG: Data?,
         allowRetry: Bool
     ) async throws -> LLMAnswer
+    /// M-C3 自然语言搜索（SPEC 6.14）：快速档、不带图、不重试，只在前台调用。
+    /// 返回模型认为相关的候选序号（CardSearchCandidate.index），按相关度从高到低。
+    @concurrent
+    func searchCards(query: String, candidates: [CardSearchCandidate], today: Date) async throws -> [Int]
     /// 深度回答：开思考、流式返回。取消消费方的 Task（或停止迭代）会取消网络请求。
+    /// cardContext（M-C3 对卡片提问）：没有截图的卡片（链接、文字收藏）的卡片信息，和截图一样挂在第一条 user 消息上。
     func streamDeepAnswer(
         imageJPEG: Data?,
         screenText: String?,
+        cardContext: String?,
         question: String,
         history: [LLMTurn]
     ) -> AsyncThrowingStream<LLMStreamEvent, any Error>
@@ -278,6 +284,22 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         你是屏幕助手。用户会给你一张手机截图和一个问题（首轮问题来自语音转写，可能有错别字）。请结合截图仔细分析后详细回答。
         直接输出回答正文，使用 Markdown（可用标题、列表、粗体），不要输出 JSON，不要寒暄。
         如果截图与问题无关或看不清，直接说明。
+        """
+
+    /// M-C3：没有截图的卡片（链接、文字收藏）被提问时用的深度档提示词。网页正文没有保存，只有整理后的摘要。
+    static let cardDeepSystemPrompt = """
+        你是收藏助手。用户收藏了一条内容（链接或一段文字），第一条消息里附有这张收藏卡片的信息：标题、摘要、附注、关键信息、来源链接等。网页正文没有保存，只有整理后的摘要。
+        请结合卡片信息回答用户的问题。卡片信息不足以回答时直接说明，可以给出基于常识的建议，但不要编造卡片里没有的具体事实。
+        直接输出回答正文，使用 Markdown（可用标题、列表、粗体），不要输出 JSON，不要寒暄。
+        """
+
+    /// M-C3 自然语言搜索的系统提示词。JSON 模式要求提示词里出现 "json" 和格式示例。
+    static let searchSystemPrompt = """
+        你是收藏库检索助手。用户会给你一句查找需求和一份收藏卡片列表，每行一张，格式为：序号 | 收藏日期 | 类型 | 标题 | 标签 | 摘要。
+        需求里的「上个月」「上周」「前几天」「去年」等时间，按用户给出的今天日期换算，再按收藏日期筛选。
+        找出与需求最相关的卡片，按相关度从高到低排列，最多 10 张。需求里提到的时间范围、类型、地点等条件都要满足；没有相关的卡片就返回空数组，不要硬凑。
+        只输出 JSON，ids 是卡片的序号：
+        {"ids": [3, 17]}
         """
 
     /// 深度回答专用 session：request 超时是两个数据包之间的最长间隔，思考期间也会持续收到 reasoning 片段；
@@ -450,6 +472,93 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         )
     }
 
+    /// 自然语言搜索：不流式（输出只有几个序号），不开思考，JSON 模式，15 秒超时，不重试（用户可以再点一次）。
+    @concurrent
+    func searchCards(query: String, candidates: [CardSearchCandidate], today: Date) async throws -> [Int] {
+        let logger = Self.makeLogger()
+        guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            logger.error("search aborted: API key is empty")
+            throw LLMError.missingAPIKey
+        }
+        let userText = """
+            今天是 \(NaturalLanguageSearch.todayText(today))。
+            查找需求：\(query)
+
+            收藏卡片（序号 | 收藏日期 | 类型 | 标题 | 标签 | 摘要）：
+            \(NaturalLanguageSearch.candidateLines(candidates))
+            """
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": model,
+            "messages": [
+                ["role": "system", "content": Self.searchSystemPrompt],
+                ["role": "user", "content": userText],
+            ],
+            "stream": false,
+            "max_tokens": 512,
+            "thinking": ["type": "disabled"],
+            "response_format": ["type": "json_object"],
+        ] as [String: Any])
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("chat/completions"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = body
+        request.timeoutInterval = Self.searchTimeout
+
+        let startedAt = ContinuousClock.now
+        logger.info(
+            "search start model=\(model, privacy: .public) queryChars=\(query.count, privacy: .public) candidates=\(candidates.count, privacy: .public) bodyBytes=\(body.count, privacy: .public)"
+        )
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await Self.quickSession.data(for: request)
+        } catch {
+            let llmError = Task.isCancelled ? LLMError.cancelled : LLMError(transportError: error)
+            logger.error("search request failed: \(llmError.logDescription, privacy: .public)")
+            throw llmError
+        }
+        guard let http = response as? HTTPURLResponse else {
+            throw LLMError.badResponse("非 HTTP 响应")
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            logger.error(
+                "search http error status=\(http.statusCode, privacy: .public) body=\(String(decoding: data.prefix(300), as: UTF8.self), privacy: .public)"
+            )
+            throw LLMError.http(status: http.statusCode)
+        }
+        let completion: ChatCompletionResponse
+        do {
+            completion = try JSONDecoder().decode(ChatCompletionResponse.self, from: data)
+        } catch {
+            logger.error("search response decode failed bytes=\(data.count, privacy: .public)")
+            throw LLMError.badResponse("响应解析失败：\(error.localizedDescription)")
+        }
+        let choice = completion.choices.first
+        let content = choice?.message.content ?? ""
+        let finish = choice?.finishReason ?? "nil"
+        logger.info(
+            "search finished finish_reason=\(finish, privacy: .public) contentChars=\(content.count, privacy: .public) promptTokens=\(completion.usage?.promptTokens ?? -1, privacy: .public) completionTokens=\(completion.usage?.completionTokens ?? -1, privacy: .public) elapsedMs=\(Self.milliseconds(ContinuousClock.now - startedAt), privacy: .public)"
+        )
+        if choice?.finishReason == "length" {
+            throw LLMError.truncated
+        }
+        guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw LLMError.emptyContent
+        }
+        do {
+            let indices = try NaturalLanguageSearch.parseIndices(content, candidateCount: candidates.count)
+            logger.info("search parsed results=\(indices.count, privacy: .public)")
+            return indices
+        } catch {
+            logger.error("search parse failed chars=\(content.count, privacy: .public) head=\(String(content.prefix(200)), privacy: .private)")
+            throw error
+        }
+    }
+
+    static let searchTimeout: TimeInterval = 15
+
     /// 分享文字的上限：整篇文章粘进来时只取开头，避免请求过大、输出变慢。
     static let maxSharedTextLength = 2000
 
@@ -528,6 +637,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
     func streamDeepAnswer(
         imageJPEG: Data?,
         screenText: String?,
+        cardContext: String?,
         question: String,
         history: [LLMTurn]
     ) -> AsyncThrowingStream<LLMStreamEvent, any Error> {
@@ -537,6 +647,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
                 try await runDeepStream(
                     imageJPEG: imageJPEG,
                     screenText: screenText,
+                    cardContext: cardContext,
                     question: question,
                     history: history,
                     continuation: continuation
@@ -553,6 +664,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
     private func runDeepStream(
         imageJPEG: Data?,
         screenText: String?,
+        cardContext: String?,
         question: String,
         history: [LLMTurn],
         continuation: AsyncThrowingStream<LLMStreamEvent, any Error>.Continuation
@@ -566,6 +678,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         let body = try makeDeepRequestBody(
             imageJPEG: imageJPEG,
             screenText: screenText,
+            cardContext: cardContext,
             question: question,
             history: history
         )
@@ -578,7 +691,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
 
         let startedAt = ContinuousClock.now
         logger.info(
-            "stream start model=\(model, privacy: .public) imageBytes=\(imageJPEG?.count ?? 0, privacy: .public) screenTextChars=\(screenText?.count ?? 0, privacy: .public) questionChars=\(question.count, privacy: .public) history=\(history.count, privacy: .public) bodyBytes=\(body.count, privacy: .public)"
+            "stream start model=\(model, privacy: .public) imageBytes=\(imageJPEG?.count ?? 0, privacy: .public) screenTextChars=\(screenText?.count ?? 0, privacy: .public) cardContextChars=\(cardContext?.count ?? 0, privacy: .public) questionChars=\(question.count, privacy: .public) history=\(history.count, privacy: .public) bodyBytes=\(body.count, privacy: .public)"
         )
 
         let bytes: URLSession.AsyncBytes
@@ -891,6 +1004,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
             systemPrompt: Self.systemPrompt,
             imageJPEG: imageJPEG,
             screenText: screenText,
+            cardContext: nil,
             question: Self.quickQuestionText(question, intentHint: intentHint),
             history: history
         )
@@ -919,13 +1033,17 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
     private func makeDeepRequestBody(
         imageJPEG: Data?,
         screenText: String?,
+        cardContext: String?,
         question: String,
         history: [LLMTurn]
     ) throws -> Data {
+        // 没有截图、只有卡片信息时换成收藏助手的提示词（默认提示词假设有截图）。
+        let usesCardPrompt = imageJPEG == nil && cardContext?.isEmpty == false
         let messages = makeMessages(
-            systemPrompt: Self.deepSystemPrompt,
+            systemPrompt: usesCardPrompt ? Self.cardDeepSystemPrompt : Self.deepSystemPrompt,
             imageJPEG: imageJPEG,
             screenText: screenText,
+            cardContext: cardContext,
             question: question,
             history: history
         )
@@ -965,6 +1083,7 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         systemPrompt: String,
         imageJPEG: Data?,
         screenText: String?,
+        cardContext: String?,
         question: String,
         history: [LLMTurn]
     ) -> [[String: Any]] {
@@ -972,15 +1091,23 @@ nonisolated struct OpenAICompatibleProvider: LLMProvider {
         let turns = history + [LLMTurn(role: .user, content: trimmedQuestion.isEmpty ? Self.implicitQuestion : trimmedQuestion)]
         let trimmedScreenText = screenText?.trimmingCharacters(in: .whitespacesAndNewlines)
         let screenText = trimmedScreenText?.isEmpty == false ? trimmedScreenText : nil
+        let trimmedCardContext = cardContext?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cardContext = trimmedCardContext?.isEmpty == false ? trimmedCardContext : nil
 
         // 截图和 OCR 文字挂在第一条 user 消息上：追问时它是首轮问题，沿用同一张截图（SPEC 6.12）。
         // DeepSeek 只接受 user 消息里的图片，放 system/assistant 会 400。
-        let contextTurnIndex = imageJPEG == nil && screenText == nil ? nil : turns.firstIndex { $0.role == .user }
+        let contextTurnIndex = imageJPEG == nil && screenText == nil && cardContext == nil
+            ? nil
+            : turns.firstIndex { $0.role == .user }
 
         var messages: [[String: Any]] = [["role": "system", "content": systemPrompt]]
         for (index, turn) in turns.enumerated() {
             if index == contextTurnIndex {
                 var text = turn.content
+                if let cardContext {
+                    // M-C3：链接、文字收藏卡片没有截图，卡片信息就是上下文。
+                    text += "\n\n（以下是这张收藏卡片的信息）\n\(cardContext)"
+                }
                 if let screenText {
                     // 放在问题后面并标明来源：模型以截图为准，OCR 只用来补小字。
                     text += "\n\n（以下是本机 OCR 从截图中识别出的文字，可能有错，仅供参考，以截图为准）\n\(screenText)"
@@ -1133,6 +1260,24 @@ nonisolated final class TransactionMetricsLogger: NSObject, URLSessionTaskDelega
 
 /// 流式响应的一个 chunk（只解需要的字段）。
 /// 不标 private：单元测试直接解码 usage chunk。
+/// 非流式响应（M-C3 自然语言搜索）：只解 content、finish_reason 和 usage。
+nonisolated struct ChatCompletionResponse: Decodable {
+    struct Choice: Decodable {
+        struct Message: Decodable {
+            let content: String?
+        }
+        let message: Message
+        let finishReason: String?
+
+        enum CodingKeys: String, CodingKey {
+            case message
+            case finishReason = "finish_reason"
+        }
+    }
+    let choices: [Choice]
+    let usage: ChatCompletionChunk.Usage?
+}
+
 nonisolated struct ChatCompletionChunk: Decodable {
     struct Choice: Decodable {
         struct Delta: Decodable {

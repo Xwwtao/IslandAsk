@@ -5,8 +5,10 @@
 //  App 入口。启动时先过首次引导门禁：权限 + 转录模型都就绪后，才显示历史列表。
 //  处理 islandask://session/<id> 深链（SPEC 第 4 节第 11 步）：打开对应会话页并结束它的 Live Activity。
 //  回到前台时做后台起录的前置准备：预热录音会话、回收异常态、清理残留 Live Activity。
+//  M-C3：系统搜索（Spotlight）点开卡片时以 NSUserActivity 打开，按卡片深链同样处理；回到前台时按需全量重建索引。
 //
 
+import CoreSpotlight
 import SwiftData
 import SwiftUI
 import os
@@ -49,6 +51,14 @@ struct IslandAskApp: App {
             .onOpenURL { url in
                 handleOpenURL(url)
             }
+            .onContinueUserActivity(CSSearchableItemActionType) { activity in
+                guard let cardID = SpotlightIndexer.cardID(from: activity) else {
+                    logger.error("spotlight continuation ignored: no card id")
+                    return
+                }
+                logger.info("spotlight continuation card=\(cardID.uuidString, privacy: .public)")
+                openCard(cardID)
+            }
             .onChange(of: phase) { _, newPhase in
                 guard newPhase == .ready else { return }
                 if let pending = appState.pendingSessionID {
@@ -79,6 +89,11 @@ struct IslandAskApp: App {
             return
         }
         logger.info("deep link received session=\(sessionID.uuidString, privacy: .public)")
+        openCard(sessionID)
+    }
+
+    /// 深链和 Spotlight 共用：卡片与会话同 id。
+    private func openCard(_ sessionID: UUID) {
         guard phase == .ready else {
             // 引导没完成时先暂存，进入主界面后再打开。
             appState.pendingSessionID = sessionID
@@ -118,5 +133,7 @@ struct IslandAskApp: App {
         await coordinator.organizePendingShareCards()
         // M-C2 补充：升级前收藏的链接卡片补取封面图和网站图标。
         await coordinator.backfillLinkImages()
+        // M-C3：第一次运行（或索引格式变了）时全量重建 Spotlight 索引。
+        SpotlightIndexer.shared.scheduleRebuildIfNeeded()
     }
 }

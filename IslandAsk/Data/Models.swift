@@ -270,6 +270,23 @@ final class Card {
 
     static let maxTitleLength = 20
 
+    /// M-C3 对卡片提问：没有截图的卡片发给深度档的上下文（标题、来源、摘要、附注、关键信息、翻译），缺的项不写。
+    var askContext: String {
+        var lines: [String] = ["标题：\(displayTitle)", "类型：\(cardTypeValue.displayName)"]
+        lines.append("收藏时间：\(createdAt.formatted(date: .abbreviated, time: .shortened))")
+        let source = [sourcePlatform, sourceTitle].compactMap { $0?.isEmpty == false ? $0 : nil }.joined(separator: " · ")
+        if !source.isEmpty { lines.append("来源：\(source)") }
+        if let sourceURL, !sourceURL.isEmpty { lines.append("链接：\(sourceURL)") }
+        if let tags, !tags.isEmpty { lines.append("标签：\(tags.joined(separator: "、"))") }
+        if let summary, !summary.isEmpty { lines.append("摘要：\(summary)") }
+        if let note, !note.isEmpty { lines.append("附注：\(note)") }
+        let info = keyInfo.map { "- \($0.label)：\($0.value)" }
+        if !info.isEmpty { lines.append("关键信息：\n" + info.joined(separator: "\n")) }
+        if let translation, !translation.isEmpty { lines.append("中文翻译：\(translation)") }
+        if linkBlocked == true { lines.append("（这个网站不允许程序读取，摘要只根据标题和附注整理。）") }
+        return lines.joined(separator: "\n")
+    }
+
     /// 已被删除（含已保存的删除）。List 删行动画期间 SwiftUI 还会用旧对象重算一次行的 body，
     /// 这时读任何持久化字段都会触发 SwiftData 断言、App 闪退，所以持有 Card 的视图先判断这个。
     /// modelContext / isDeleted 不是持久化字段，删除后读取是安全的。

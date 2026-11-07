@@ -92,9 +92,12 @@ enum AppDatabase {
     /// 返回是否保存成功；大多数调用方只需要日志，忽略返回值。
     @discardableResult
     static func save(reason: String) -> Bool {
+        // M-C3：保存前收集这次改动的卡片，保存成功后同步 Spotlight 索引（所有写库都经这里，不会漏）。
+        let spotlightChanges = SpotlightIndexer.pendingCardChanges(in: context)
         do {
             try context.save()
             logger.info("database saved reason=\(reason, privacy: .public)")
+            SpotlightIndexer.shared.enqueue(upserts: spotlightChanges.upserts, deletes: spotlightChanges.deletes)
             return true
         } catch {
             logger.error(

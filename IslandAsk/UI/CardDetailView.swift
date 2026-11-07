@@ -332,8 +332,9 @@ struct AddTagSheet: View {
 
 // MARK: - 分享卡片详情（M-C2）
 
-/// 分享得到的卡片没有会话：只显示卡片信息（含原链接）和整理状态 / 内容摘要。
+/// 分享得到的卡片：卡片信息（含原链接）和整理状态 / 内容摘要。
 /// 「整理中」只在请求真正进行时显示（LinkOrganizeStore）；断网留下的 pending 显示「待整理」和「现在整理」。
+/// M-C3：不再自带 ScrollView，由 SessionDetailView 放进时间线，下面接对卡片的提问记录和输入框。
 struct LinkCardContent: View {
 
     let card: Card
@@ -346,22 +347,19 @@ struct LinkCardContent: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: Theme.Spacing.section) {
-                if let coverURL = card.coverURL {
-                    LinkCoverImage(url: coverURL)
-                        .staggeredAppear(0)
-                }
-                CardInfoSection(card: card)
+        VStack(alignment: .leading, spacing: Theme.Spacing.section) {
+            if let coverURL = card.coverURL {
+                LinkCoverImage(url: coverURL)
                     .staggeredAppear(0)
-                statusSection
-                    .staggeredAppear(1)
-                if card.linkBlocked == true {
-                    blockedHint
-                        .staggeredAppear(2)
-                }
             }
-            .padding(Theme.Spacing.page)
+            CardInfoSection(card: card)
+                .staggeredAppear(0)
+            statusSection
+                .staggeredAppear(1)
+            if card.linkBlocked == true {
+                blockedHint
+                    .staggeredAppear(2)
+            }
         }
     }
 
