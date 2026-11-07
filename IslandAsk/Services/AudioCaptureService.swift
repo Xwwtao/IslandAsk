@@ -58,6 +58,36 @@ final class AudioCaptureService {
             .appendingPathExtension("m4a")
     }
 
+    /// 录音只用来回放自己说的话：每声道 32kbps 的 AAC 足够听清，比编码器默认码率小一半以上（性能优化：存储）。
+    /// 采样率、声道数仍跟输入一致：tap 的 buffer 直接写进文件，不做重采样。
+    static let speechBitRatePerChannel = 32_000
+
+    /// 先按语音码率建文件；编码器不接受这个码率（个别采样率 / 外接麦克风）时退回默认码率，保证照常录音。
+    /// TODO: 核对官方文档：AVEncoderBitRateKey 对 AAC 在 16k / 44.1k / 48k 单声道下的可用范围；真机看日志里的 bitRate 和录音文件大小。
+    static func makeRecordingFile(url: URL, inputFormat: AVAudioFormat) throws -> AVAudioFile {
+        let baseSettings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatMPEG4AAC,
+            AVSampleRateKey: inputFormat.sampleRate,
+            AVNumberOfChannelsKey: inputFormat.channelCount,
+        ]
+        let bitRate = speechBitRatePerChannel * Int(inputFormat.channelCount)
+        var speechSettings = baseSettings
+        speechSettings[AVEncoderBitRateKey] = bitRate
+        do {
+            let file = try AVAudioFile(forWriting: url, settings: speechSettings)
+            logger.info(
+                "recording file created bitRate=\(bitRate, privacy: .public) sampleRate=\(inputFormat.sampleRate, privacy: .public) channels=\(inputFormat.channelCount, privacy: .public)"
+            )
+            return file
+        } catch {
+            logger.error(
+                "recording file with speech bitrate failed, using default bitrate=\(bitRate, privacy: .public) sampleRate=\(inputFormat.sampleRate, privacy: .public) \(describe(error), privacy: .public)"
+            )
+            try? FileManager.default.removeItem(at: url)
+            return try AVAudioFile(forWriting: url, settings: baseSettings)
+        }
+    }
+
     /// App 在前台且麦克风已授权时调用：成功激活录音会话再立刻释放。
     /// 这是真机上「后台起录」的前置条件；用 .mixWithOthers 激活不会打断用户正在播放的音乐。
     @discardableResult
@@ -118,12 +148,7 @@ final class AudioCaptureService {
 
         do {
             let inputFormat = try await waitForInputFormat()
-            let fileSettings: [String: Any] = [
-                AVFormatIDKey: kAudioFormatMPEG4AAC,
-                AVSampleRateKey: inputFormat.sampleRate,
-                AVNumberOfChannelsKey: inputFormat.channelCount,
-            ]
-            let file = try AVAudioFile(forWriting: fileURL, settings: fileSettings)
+            let file = try Self.makeRecordingFile(url: fileURL, inputFormat: inputFormat)
             audioFile = file
             writtenFrames.withLock { $0 = 0 }
             fileSampleRate = inputFormat.sampleRate

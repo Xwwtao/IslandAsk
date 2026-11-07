@@ -5,7 +5,10 @@
 //  不依赖真机的纯逻辑：Markdown 解析与流式切分、识别提示词提取、大模型回答解析与错误分类、静音检测判定。
 //
 
+import AVFAudio
 import Foundation
+import ImageIO
+import UIKit
 import Testing
 import os
 @testable import IslandAsk
@@ -871,5 +874,80 @@ struct NetworkAddressBypassTests {
         for host in ["cafe.com", "ad.example.com", "1e100.net", "8.8.8.8", "::ffff:808:808", "64:ff9b::8.8.8.8", "2001:4860::8888"] {
             #expect(!NetworkAddressPolicy.isPrivateHost(host), "\(host)")
         }
+    }
+}
+
+// MARK: - 性能优化：存储与缩略图
+
+struct StorageOptimizationTests {
+
+    /// 一张带文字和色块的「截图」：比纯色图更接近真实截图的压缩表现。
+    private static func makeScreenshotPNG() throws -> URL {
+        let size = CGSize(width: 390, height: 844)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 3
+        let image = UIGraphicsImageRenderer(size: size, format: format).image { context in
+            UIColor.systemBackground.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            for row in 0..<30 {
+                let text = "第 \(row) 行 IslandAsk 性能测试 截图文字 1234567890"
+                (text as NSString).draw(at: CGPoint(x: 16, y: 20 + row * 26), withAttributes: [.font: UIFont.systemFont(ofSize: 15)])
+            }
+            UIColor.systemBlue.setFill()
+            context.fill(CGRect(x: 16, y: 820, width: 358, height: 16))
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).png")
+        try #require(image.pngData()).write(to: url)
+        return url
+    }
+
+    @Test func recognizesPNGPaths() {
+        #expect(ScreenshotStore.isPNGPath("sessions/abc.png"))
+        #expect(ScreenshotStore.isPNGPath("sessions/abc.PNG"))
+        #expect(!ScreenshotStore.isPNGPath("sessions/abc.heic"))
+        #expect(!ScreenshotStore.isPNGPath("sessions/abc-cover.jpg"))
+    }
+
+    @Test func convertsPNGToSmallerHEICWithSamePixelSize() throws {
+        let pngURL = try Self.makeScreenshotPNG()
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        let sessionID = UUID()
+        let result = ScreenshotStore.convertToHEIC(pngURL: pngURL, sessionID: sessionID)
+        switch result {
+        case .encoderUnavailable:
+            // 部分模拟器没有 HEIC 编码器：真机上一定有，这里不算失败。
+            return
+        case .converted(let heicURL, let originalBytes, let heicBytes):
+            defer { try? FileManager.default.removeItem(at: heicURL) }
+            #expect(heicBytes < originalBytes)
+            #expect(FileManager.default.fileExists(atPath: pngURL.path), "原 PNG 由调用方改库后再删")
+            let source = try #require(CGImageSourceCreateWithURL(heicURL as CFURL, nil))
+            let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+            #expect(image.width == 1170)
+            #expect(image.height == 2532)
+        case .notSmaller, .failed:
+            Issue.record("unexpected conversion result \(result)")
+        }
+    }
+
+    @Test func thumbnailCacheServesSecondLookupFromMemory() async throws {
+        let pngURL = try Self.makeScreenshotPNG()
+        defer { try? FileManager.default.removeItem(at: pngURL) }
+        #expect(ThumbnailCache.shared.cached(url: pngURL, maxPixelSize: 192) == nil)
+        let loaded = try #require(await ThumbnailCache.shared.load(url: pngURL, maxPixelSize: 192))
+        #expect(max(loaded.size.width * loaded.scale, loaded.size.height * loaded.scale) <= 192)
+        #expect(ThumbnailCache.shared.cached(url: pngURL, maxPixelSize: 192) === loaded)
+        // 尺寸不同是不同的缓存项。
+        #expect(ThumbnailCache.shared.cached(url: pngURL, maxPixelSize: 96) == nil)
+    }
+
+    @MainActor
+    @Test func recordingFileUsesInputFormat() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let input = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let file = try AudioCaptureService.makeRecordingFile(url: url, inputFormat: input)
+        #expect(file.processingFormat.sampleRate == 48_000)
+        #expect(file.processingFormat.channelCount == 1)
     }
 }

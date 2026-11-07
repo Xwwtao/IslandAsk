@@ -64,6 +64,8 @@ nonisolated enum AppSettings {
         static let noSpeechCollects = "collect.noSpeechCollects"
         static let collectNoSpeechSeconds = "collect.noSpeechSeconds"
         static let lastHandledClipboardChangeCount = "clipboard.lastHandledChangeCount"
+        static let lastSetupComplete = "launch.lastSetupComplete"
+        static let legacyCardBackfillDone = "maintenance.legacyCardBackfillDone"
     }
 
     private static var defaults: UserDefaults { .standard }
@@ -125,6 +127,20 @@ nonisolated enum AppSettings {
     static var historyRetentionDays: Int {
         get { defaults.integer(forKey: Key.historyRetentionDays) }
         set { defaults.set(newValue, forKey: Key.historyRetentionDays) }
+    }
+
+    // MARK: - 启动与维护（不在设置页显示）
+
+    /// 上次启动检查时权限和转录模型是否都就绪。为 true 时冷启动直接进收藏库，转录模型的检查放到后台核对。
+    static var lastSetupComplete: Bool {
+        get { defaults.bool(forKey: Key.lastSetupComplete) }
+        set { defaults.set(newValue, forKey: Key.lastSetupComplete) }
+    }
+
+    /// 旧会话补建卡片（SPEC 6.11）已经跑完：之后新会话都会同时建卡片，不必每次回前台都把全部会话读出来检查。
+    static var legacyCardBackfillDone: Bool {
+        get { defaults.bool(forKey: Key.legacyCardBackfillDone) }
+        set { defaults.set(newValue, forKey: Key.legacyCardBackfillDone) }
     }
 
     // MARK: - 调试

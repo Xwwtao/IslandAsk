@@ -46,32 +46,61 @@ nonisolated enum RecordingTrimmer {
             logger.info("trim skipped: nothing to trim session=\(sessionID.uuidString, privacy: .public) duration=\(originalSeconds, privacy: .public) keep=\(keepSeconds, privacy: .public)")
             return nil
         }
-        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
-            logger.error("trim skipped: export session unavailable session=\(sessionID.uuidString, privacy: .public)")
+        let tempURL = fileURL.deletingLastPathComponent()
+            .appendingPathComponent("\(sessionID.uuidString)-trimmed")
+            .appendingPathExtension("m4a")
+        // 性能优化：先直通导出（只截取、不重新编码，保留录音时的低码率，也更快）；不支持时退回重新编码。
+        var preset = AVAssetExportPresetPassthrough
+        var exported = await export(asset: asset, preset: preset, keepSeconds: keepSeconds, to: tempURL, sessionID: sessionID, logger: logger)
+        if !exported {
+            preset = AVAssetExportPresetAppleM4A
+            exported = await export(asset: asset, preset: preset, keepSeconds: keepSeconds, to: tempURL, sessionID: sessionID, logger: logger)
+        }
+        guard exported else { return nil }
+        do {
+            _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tempURL)
+        } catch {
+            try? FileManager.default.removeItem(at: tempURL)
+            logger.error("trim failed: replace error session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
             return nil
+        }
+        let trimmed = originalSeconds - keepSeconds
+        let elapsedMs = SessionTiming.milliseconds(ContinuousClock.now - startedAt)
+        let bytes = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        logger.info(
+            "recording trimmed session=\(sessionID.uuidString, privacy: .public) original=\(originalSeconds, privacy: .public) kept=\(keepSeconds, privacy: .public) trimmed=\(trimmed, privacy: .public) preset=\(preset, privacy: .public) bytes=\(bytes, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)"
+        )
+        return trimmed
+    }
+
+    /// 导出前 keepSeconds 秒到 tempURL；失败时删掉临时文件并返回 false。
+    private static func export(
+        asset: AVURLAsset,
+        preset: String,
+        keepSeconds: Double,
+        to tempURL: URL,
+        sessionID: UUID,
+        logger: Logger
+    ) async -> Bool {
+        try? FileManager.default.removeItem(at: tempURL)
+        guard let export = AVAssetExportSession(asset: asset, presetName: preset) else {
+            logger.error("trim export unavailable preset=\(preset, privacy: .public) session=\(sessionID.uuidString, privacy: .public)")
+            return false
         }
         export.timeRange = CMTimeRange(
             start: .zero,
             duration: CMTime(seconds: keepSeconds, preferredTimescale: 600)
         )
-        let tempURL = fileURL.deletingLastPathComponent()
-            .appendingPathComponent("\(sessionID.uuidString)-trimmed")
-            .appendingPathExtension("m4a")
-        try? FileManager.default.removeItem(at: tempURL)
         do {
             // export(to:as:) 签名已对照 iPhoneOS SDK 的 AVFoundation.swiftinterface 核对。
             try await export.export(to: tempURL, as: .m4a)
-            _ = try FileManager.default.replaceItemAt(fileURL, withItemAt: tempURL)
+            return true
         } catch {
             try? FileManager.default.removeItem(at: tempURL)
-            logger.error("trim failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
-            return nil
+            logger.error(
+                "trim export failed preset=\(preset, privacy: .public) session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return false
         }
-        let trimmed = originalSeconds - keepSeconds
-        let elapsedMs = SessionTiming.milliseconds(ContinuousClock.now - startedAt)
-        logger.info(
-            "recording trimmed session=\(sessionID.uuidString, privacy: .public) original=\(originalSeconds, privacy: .public) kept=\(keepSeconds, privacy: .public) trimmed=\(trimmed, privacy: .public) elapsedMs=\(elapsedMs, privacy: .public)"
-        )
-        return trimmed
     }
 }

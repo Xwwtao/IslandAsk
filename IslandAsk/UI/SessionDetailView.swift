@@ -483,12 +483,25 @@ struct SessionDetailView: View {
         }
     }
 
+    /// 全尺寸截图在主线程之外读盘并解码好再弹出，点开大图时不卡一下。
     private func openScreenshot(url: URL, sessionID: UUID) {
-        guard let image = UIImage(contentsOfFile: url.path) else {
-            logger.error("screenshot open failed session=\(sessionID.uuidString, privacy: .public)")
-            return
+        Task {
+            let started = ContinuousClock.now
+            guard let image = await Self.loadFullImage(url: url) else {
+                logger.error("screenshot open failed session=\(sessionID.uuidString, privacy: .public)")
+                return
+            }
+            logger.info(
+                "screenshot opened session=\(sessionID.uuidString, privacy: .public) elapsedMs=\(PerformanceTrace.milliseconds(since: started), privacy: .public)"
+            )
+            fullScreenImage = ViewerImage(image: image)
         }
-        fullScreenImage = ViewerImage(image: image)
+    }
+
+    @concurrent
+    nonisolated private static func loadFullImage(url: URL) async -> UIImage? {
+        guard let image = UIImage(contentsOfFile: url.path) else { return nil }
+        return await image.byPreparingForDisplay() ?? image
     }
 
     private func retry(_ session: AskSession) {
@@ -880,11 +893,13 @@ private struct ScreenshotHero<Accessories: View>: View {
     @State private var image: UIImage?
 
     private let height: CGFloat = 300
+    private var maxPixelSize: Int { Int(height * displayScale) }
 
     var body: some View {
+        let shown = image ?? ThumbnailCache.shared.cached(url: url, maxPixelSize: maxPixelSize)
         VStack(spacing: 12) {
             ZStack {
-                if let image {
+                if let image = shown {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
@@ -937,16 +952,8 @@ private struct ScreenshotHero<Accessories: View>: View {
             }
         }
         .task(id: url) {
-            image = await HeroImageLoader.load(url: url, maxPixelSize: Int(height * displayScale))
+            image = await ThumbnailCache.shared.load(url: url, maxPixelSize: maxPixelSize)
         }
-    }
-}
-
-/// 放在泛型视图外面：泛型参数的 View 一致性可能带隔离，不能传进 @concurrent 函数。
-nonisolated private enum HeroImageLoader {
-    @concurrent
-    static func load(url: URL, maxPixelSize: Int) async -> UIImage? {
-        ScreenshotStore.thumbnail(url: url, maxPixelSize: maxPixelSize)
     }
 }
 

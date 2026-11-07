@@ -61,6 +61,8 @@ struct LibraryView: View {
 
     var body: some View {
         @Bindable var appState = appState
+        // 筛选、搜索、分组每次刷新只算一遍，列表、工具栏、全选都用这一份（之前每个用处各算一遍）。
+        let state = makeListState()
         NavigationStack(path: $appState.path) {
             Group {
                 if cards.isEmpty {
@@ -72,7 +74,7 @@ struct LibraryView: View {
                         emptyState
                     }
                 } else {
-                    list
+                    list(state)
                 }
             }
             // M-C2 剪贴板入口：出现时和回到前台时检测剪贴板里有没有链接（不读内容、不弹粘贴提示）。
@@ -103,7 +105,7 @@ struct LibraryView: View {
             // 换了分段或类型筛选：候选变了，按新范围重搜（之前回车搜过的话）。
             .onChange(of: segment) { rerunAISearchIfNeeded() }
             .onChange(of: typeFilter) { rerunAISearchIfNeeded() }
-            .toolbar { toolbarContent }
+            .toolbar { toolbarContent(state) }
             .environment(\.editMode, $editMode)
             .navigationDestination(for: AppRoute.self) { route in
                 switch route {
@@ -146,7 +148,7 @@ struct LibraryView: View {
                 searchText = query
                 logger.info("library: search by tag from card detail chars=\(query.count, privacy: .public)")
             }
-            .onChange(of: visibleCardIDs) { _, visible in
+            .onChange(of: state.visibleIDs) { _, visible in
                 // 全选只作用于当前分段和筛选下可见的卡片；切换后看不见的不留在选中里。
                 selection.formIntersection(visible)
             }
@@ -155,7 +157,7 @@ struct LibraryView: View {
 
     // MARK: - 列表
 
-    private var list: some View {
+    private func list(_ state: LibraryListState) -> some View {
         List(selection: listSelection) {
             if !isSelecting {
                 Section {
@@ -180,17 +182,17 @@ struct LibraryView: View {
                     .listRowBackground(Color.clear)
                     .selectionDisabled()
             }
-            if showsAISearch, !aiResultCards.isEmpty {
-                aiResultsSection
+            if !state.aiResults.isEmpty {
+                aiResultsSection(state.aiResults)
             }
-            if textMatchedCards.isEmpty, !hidesLocalEmptyState {
+            if state.textMatched.isEmpty, !hidesLocalEmptyState {
                 Section {
                     filteredEmptyState
                         .listRowBackground(Color.clear)
                         .selectionDisabled()
                 }
             }
-            ForEach(groupedCards, id: \.title) { group in
+            ForEach(state.groups, id: \.title) { group in
                 Section(group.title) {
                     ForEach(group.cards) { card in
                         row(card)
@@ -254,9 +256,9 @@ struct LibraryView: View {
         return ids.compactMap { byID[$0] }.filter { !$0.isGone }
     }
 
-    private var aiResultsSection: some View {
+    private func aiResultsSection(_ aiResults: [Card]) -> some View {
         Section {
-            ForEach(aiResultCards) { card in
+            ForEach(aiResults) { card in
                 row(card)
             }
         } header: {
@@ -361,13 +363,15 @@ struct LibraryView: View {
     // MARK: - 工具栏
 
     @ToolbarContentBuilder
-    private var toolbarContent: some ToolbarContent {
+    private func toolbarContent(_ state: LibraryListState) -> some ToolbarContent {
         if isSelecting {
             ToolbarItem(placement: .topBarLeading) {
-                Button(allVisibleSelected ? "取消全选" : "全选") {
-                    selection = allVisibleSelected ? [] : selectableVisibleIDs
+                let selectable = state.selectableIDs
+                let allSelected = !selectable.isEmpty && selectable.isSubset(of: selection)
+                Button(allSelected ? "取消全选" : "全选") {
+                    selection = allSelected ? [] : selectable
                 }
-                .disabled(selectableVisibleIDs.isEmpty)
+                .disabled(selectable.isEmpty)
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("完成", action: endSelecting)
@@ -453,25 +457,6 @@ struct LibraryView: View {
         return filteredCards.filter { query.matches(texts: $0.searchableTexts, tags: $0.tags ?? []) }
     }
 
-    /// 本地结果分组用的卡片：去掉已在 AI 结果里的（AI 结果单独一组排在最前，同一张卡片不出现两次）。
-    private var localSectionCards: [Card] {
-        let aiIDs = Set(aiResultCards.map(\.id))
-        guard !aiIDs.isEmpty else { return textMatchedCards }
-        return textMatchedCards.filter { !aiIDs.contains($0.id) }
-    }
-
-    private var visibleCardIDs: Set<UUID> {
-        Set((aiResultCards + localSectionCards).map(\.id))
-    }
-
-    private var selectableVisibleIDs: Set<UUID> {
-        Set((aiResultCards + localSectionCards).filter { !$0.isBusy }.map(\.id))
-    }
-
-    private var allVisibleSelected: Bool {
-        !selectableVisibleIDs.isEmpty && selectableVisibleIDs.isSubset(of: selection)
-    }
-
     private var selectedCards: [Card] {
         cards.filter { selection.contains($0.id) }
     }
@@ -486,17 +471,35 @@ struct LibraryView: View {
         return cards.flatMap { $0.tags ?? [] }.filter { seen.insert($0).inserted }
     }
 
+    /// 一次刷新里列表要用的全部派生数据。
+    private struct LibraryListState {
+        let textMatched: [Card]
+        let aiResults: [Card]
+        let groups: [CardGroup]
+        let visibleIDs: Set<UUID>
+        /// 当前可见、不在进行中的卡片：多选「全选」用。
+        let selectableIDs: Set<UUID>
+    }
+
     private struct CardGroup {
         let title: String
         let cards: [Card]
     }
 
-    private var groupedCards: [CardGroup] {
+    private func makeListState() -> LibraryListState {
+        let state = PerformanceTrace.signposter.beginInterval("library.derive")
+        defer { PerformanceTrace.signposter.endInterval("library.derive", state) }
+
+        let matched = textMatchedCards
+        let aiResults = aiResultCards
+        let aiIDs = Set(aiResults.map(\.id))
+        let local = aiIDs.isEmpty ? matched : matched.filter { !aiIDs.contains($0.id) }
+
         let calendar = Calendar.current
         var today: [Card] = []
         var yesterday: [Card] = []
         var earlier: [Card] = []
-        for card in localSectionCards {
+        for card in local {
             if calendar.isDateInToday(card.createdAt) {
                 today.append(card)
             } else if calendar.isDateInYesterday(card.createdAt) {
@@ -505,12 +508,21 @@ struct LibraryView: View {
                 earlier.append(card)
             }
         }
-        return [
+        let groups = [
             CardGroup(title: "今天", cards: today),
             CardGroup(title: "昨天", cards: yesterday),
             CardGroup(title: "更早", cards: earlier),
         ]
         .filter { !$0.cards.isEmpty }
+
+        let visible = aiResults + local
+        return LibraryListState(
+            textMatched: matched,
+            aiResults: aiResults,
+            groups: groups,
+            visibleIDs: Set(visible.map(\.id)),
+            selectableIDs: Set(visible.filter { !$0.isBusy }.map(\.id))
+        )
     }
 
     // MARK: - 空状态
@@ -870,13 +882,16 @@ struct ScreenshotThumbnail: View {
     @State private var image: UIImage?
 
     private var height: CGFloat { width * 4 / 3 }
+    private var maxPixelSize: Int { Int(height * displayScale) }
 
     var body: some View {
+        // 缓存命中时第一帧就显示图片：滚回来、从详情返回时不闪占位图。
+        let shown = image ?? url.flatMap { ThumbnailCache.shared.cached(url: $0, maxPixelSize: maxPixelSize) }
         RoundedRectangle(cornerRadius: Theme.Radius.inner)
             .fill(Theme.Colors.insetBackground)
             .frame(width: width, height: height)
             .overlay(alignment: .top) {
-                if let image {
+                if let image = shown {
                     Image(uiImage: image)
                         .resizable()
                         .scaledToFill()
@@ -893,19 +908,14 @@ struct ScreenshotThumbnail: View {
                 RoundedRectangle(cornerRadius: Theme.Radius.inner)
                     .strokeBorder(.separator.opacity(0.6))
             }
-            .animation(.easeOut(duration: 0.2), value: image != nil)
+            .animation(.easeOut(duration: 0.2), value: shown != nil)
             .accessibilityHidden(true)
             .task(id: url) {
                 guard let url else {
                     image = nil
                     return
                 }
-                image = await Self.loadThumbnail(url: url, maxPixelSize: Int(height * displayScale))
+                image = await ThumbnailCache.shared.load(url: url, maxPixelSize: maxPixelSize)
             }
-    }
-
-    @concurrent
-    private static func loadThumbnail(url: URL, maxPixelSize: Int) async -> UIImage? {
-        ScreenshotStore.thumbnail(url: url, maxPixelSize: maxPixelSize)
     }
 }

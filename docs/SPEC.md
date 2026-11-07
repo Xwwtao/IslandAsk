@@ -101,6 +101,7 @@ IslandAsk/                           // 主 App target
 │   ├── SessionCoordinator.swift
 │   ├── SessionCoordinator+Cards.swift  // （M-C1）写卡片、灵动岛收藏 / 改为提问、批量操作、重新整理、旧会话补建卡片
 │   ├── SessionCoordinator+Links.swift  // （M-C2）分享链接建卡与整理、回前台补整理、导入 inbox
+│   ├── SessionCoordinator+Storage.swift  // （性能优化）截图 PNG 在后台转 HEIC
 │   ├── SessionCoordinator+Reminders.swift  // （M-D1）提醒的建议、设置、取消
 │   ├── SessionCoordinator+Synthesis.swift  // （M-D2）多张卡片交给 AI 整理
 │   ├── SessionCoordinator+Places.swift     // （M-D3）已读、地点定位、小组件快照刷新
@@ -126,6 +127,8 @@ IslandAsk/                           // 主 App target
 │   ├── ClipboardLinkDetector.swift  // （M-C2）剪贴板入口：检测剪贴板里是否有链接（不读内容）
 │   ├── CardSearch.swift             // （M-C3）本地搜索词、自然语言搜索的候选与结果解析、AI 搜索状态
 │   ├── SpotlightIndexer.swift       // （M-C3）Core Spotlight 索引
+│   ├── ThumbnailCache.swift         // （性能优化）缩略图内存缓存
+│   ├── PerformanceTrace.swift       // （性能优化）signpost 打点与耗时
 │   ├── TextRecognizer.swift         // 截图文字识别（M4）；M-D4 起同时返回文字位置
 │   ├── KeyInfoActions.swift         // （M-D1）关键信息类型推断与可执行操作
 │   ├── ReminderScheduler.swift      // （M-D1）通知授权、提醒排程与取消
@@ -184,7 +187,7 @@ IslandAskShare/                      // （M-C2 阶段 2）Share Extension targe
 1. Action Button 运行快捷指令「屏幕提问」。
 2. 快捷指令执行「截屏」，得到图片。
 3. 快捷指令调用 `AskAboutScreenIntent` 并传入截图，系统在主 App 进程中执行 `perform()`。
-4. `ScreenshotStore` 把截图存到 App Group 容器的 `sessions/<id>.png`，返回文件 URL。
+4. `ScreenshotStore` 把截图存到 App Group 容器的 `sessions/<id>.png`，返回文件 URL（之后在后台转成 `sessions/<id>.heic`，见 6.8）。
 5. `SessionCoordinator.start` 依次执行：
    1. 结束上一个仍在显示的 Live Activity。
    2. 用 `Activity.request` 启动新的 Live Activity（phase = listening）。
@@ -427,7 +430,9 @@ struct StopAskIntent: LiveActivityIntent {
 ### 6.8 截图处理（ScreenshotStore）
 
 - 原图保存到 App Group 容器：`sessions/<sessionID>.png`（录音 `sessions/<sessionID>.m4a` 同目录）。数据库里只存相对容器的路径。
-- 发送给大模型前：长边缩放到 1536 px，转 JPEG（质量 0.75），再转 base64。
+- 存储（性能优化）：按键时原样写 PNG，不在灵动岛出现前编码；App 回到前台延后约 8 秒，在后台把不在进行中的卡片截图逐张转成同尺寸 HEIC（质量 0.8，体积约为 PNG 的 5%–20%），写好后改卡片和会话的 screenshotPath 为 `sessions/<sessionID>.heic`，保存成功再删 PNG；正在录音或等回答时暂停。读截图的地方都按路径读，两种格式通用。
+- 录音（性能优化）：AAC 每声道 32kbps，采样率和声道数跟输入一致；编码器不接受时退回默认码率。截掉末尾静音时先直通导出（不重新编码），不支持再重新编码。
+- 发送给大模型前：长边缩放到 1280 px（M4 耗时优化，原为 1536），转 JPEG（质量 0.75），再转 base64。
 - 可选增强（M4）：用 Vision 的文字识别提取截图文字，作为补充上下文一起发送，提高中文小字的识别准确率。
 - 打码（M-D4）：缩放、转 JPEG 之后，转 base64 之前，按卡片的打码区域盖住敏感信息，见 6.19。本机保存的原图不改。
 
@@ -646,7 +651,7 @@ listening 布局按 M1 真机反馈调整，原因：
 ```swift
 @Model final class AskSession {
     @Attribute(.unique) var id: UUID; var createdAt: Date
-    var screenshotPath: String?   // 相对 App Group 容器的路径：sessions/<id>.png
+    var screenshotPath: String?   // 相对 App Group 容器的路径：sessions/<id>.png，后台转码后为 sessions/<id>.heic
     var transcript: String
     var summary: String?; var answer: String?   // 快速档
     var status: String            // listening / thinking / answered / failed

@@ -405,17 +405,30 @@ extension SessionCoordinator {
 
     /// App 回到前台时为没有卡片的旧会话补建卡片（SPEC 6.11）：origin = press，isSaved = nil，organizeStatus = done，
     /// title 取 summary（为空时取转录文字），截到 20 字。不为旧会话调大模型。进行中的会话跳过。
-    func backfillCardsForLegacySessions() {
+    /// 性能优化：全部补完后记下标记，之后回前台不再把所有会话读出来检查（新会话创建时就带卡片）。
+    func backfillCardsForLegacySessionsIfNeeded() {
+        guard !AppSettings.legacyCardBackfillDone else { return }
+        let (done, ms) = PerformanceTrace.measure("maintenance.legacyBackfill") { backfillCardsForLegacySessions() }
+        if done {
+            AppSettings.legacyCardBackfillDone = true
+        }
+        logger.info("backfill check finished done=\(done, privacy: .public) elapsedMs=\(ms, privacy: .public)")
+    }
+
+    /// 返回旧会话是否已全部补完（有进行中被跳过的、或读写失败时返回 false，下次回前台再补）。
+    @discardableResult
+    func backfillCardsForLegacySessions() -> Bool {
         let sessions: [AskSession]
         do {
             // 关系为 nil 的谓词在 SwiftData 里支持情况不明，数据量小，取出来在内存里过滤。
             sessions = try AppDatabase.context.fetch(FetchDescriptor<AskSession>()).filter { $0.card == nil }
         } catch {
             logger.error("backfill failed: fetch error=\(error.localizedDescription, privacy: .public)")
-            return
+            return false
         }
         let legacy = sessions.filter { !isCardBusy(id: $0.id) }
-        guard !legacy.isEmpty else { return }
+        let skippedBusy = sessions.count - legacy.count
+        guard !legacy.isEmpty else { return skippedBusy == 0 }
         for session in legacy {
             let card = Card(id: session.id, createdAt: session.createdAt, origin: .press, screenshotPath: session.screenshotPath)
             AppDatabase.context.insert(card)
@@ -429,7 +442,8 @@ extension SessionCoordinator {
             let titleSource = summary.isEmpty ? transcript : summary
             card.title = titleSource.isEmpty ? nil : String(titleSource.prefix(Card.maxTitleLength))
         }
-        AppDatabase.save(reason: "backfill cards count=\(legacy.count)")
-        logger.info("backfill cards for legacy sessions count=\(legacy.count, privacy: .public)")
+        let saved = AppDatabase.save(reason: "backfill cards count=\(legacy.count)")
+        logger.info("backfill cards for legacy sessions count=\(legacy.count, privacy: .public) saved=\(saved, privacy: .public)")
+        return saved && skippedBusy == 0
     }
 }

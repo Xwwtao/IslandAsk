@@ -4,6 +4,9 @@
 //
 //  截图存储：App Group 容器的 sessions/<sessionID>.png（SPEC 第 6.8 / 第 4 节第 4 步）。
 //  录音 m4a 也放在同一目录。数据库里只存相对容器的路径（relativePath），用 url(forRelativePath:) 还原。
+//  性能优化：按键时仍原样写 PNG（不在启动灵动岛前编码），会话结束后由 SessionCoordinator+Storage 在后台转成
+//  sessions/<sessionID>.heic（全尺寸，体积约为 PNG 的一成到两成），转好后改库里的路径再删 PNG。
+//  读截图的地方（缩略图、上传压缩、OCR、大图）都按路径用 ImageIO / Vision / UIImage 读，两种格式都能读。
 //
 
 import AppIntents
@@ -68,7 +71,7 @@ nonisolated enum ScreenshotStore {
         let logger = makeLogger()
         guard let directory = try? sessionsDirectory() else { return }
         // 截图、录音，以及 M-C2 补充的链接封面图和网站图标。
-        let fileNames = ["\(sessionID.uuidString).png", "\(sessionID.uuidString).m4a"]
+        let fileNames = ["\(sessionID.uuidString).png", "\(sessionID.uuidString).heic", "\(sessionID.uuidString).m4a"]
             + [LinkImageStore.Kind.cover, .icon].map { LinkImageStore.fileName(cardID: sessionID, kind: $0) }
         for fileName in fileNames {
             let url = directory.appendingPathComponent(fileName)
@@ -169,6 +172,75 @@ nonisolated enum ScreenshotStore {
         )
         return data
     }
+
+    // MARK: - 转 HEIC（性能优化：存储）
+
+    static func heicFileURL(sessionID: UUID) throws -> URL {
+        try sessionsDirectory()
+            .appendingPathComponent(sessionID.uuidString)
+            .appendingPathExtension("heic")
+    }
+
+    static func isPNGPath(_ relativePath: String) -> Bool {
+        relativePath.lowercased().hasSuffix(".png")
+    }
+
+    enum HEICConversion: Equatable {
+        /// 写好了 HEIC 文件；原 PNG 还在，由调用方改库成功后再删。
+        case converted(url: URL, originalBytes: Int, heicBytes: Int)
+        /// HEIC 不比原图小（极少见，比如纯色小图）：不转，保留 PNG。
+        case notSmaller
+        /// 本机不支持 HEIC 编码（模拟器、旧设备）：整轮停止。
+        case encoderUnavailable
+        case failed
+    }
+
+    /// 把 PNG 截图转成同尺寸 HEIC。只写新文件，不动原文件、不碰数据库。调用方应在主线程之外执行。
+    static func convertToHEIC(pngURL: URL, sessionID: UUID) -> HEICConversion {
+        let logger = makeLogger()
+        guard let source = CGImageSourceCreateWithURL(pngURL as CFURL, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            logger.error("heic convert: open source failed session=\(sessionID.uuidString, privacy: .public)")
+            return .failed
+        }
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output as CFMutableData,
+            UTType.heic.identifier as CFString,
+            1,
+            nil
+        ) else {
+            logger.error("heic convert: encoder unavailable session=\(sessionID.uuidString, privacy: .public)")
+            return .encoderUnavailable
+        }
+        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: heicQuality]
+        CGImageDestinationAddImage(destination, image, options as CFDictionary)
+        guard CGImageDestinationFinalize(destination) else {
+            logger.error("heic convert: finalize failed session=\(sessionID.uuidString, privacy: .public)")
+            return .failed
+        }
+        let heic = output as Data
+        let originalBytes = (try? pngURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0
+        guard originalBytes == 0 || heic.count < originalBytes else {
+            logger.info(
+                "heic convert skipped: not smaller session=\(sessionID.uuidString, privacy: .public) png=\(originalBytes, privacy: .public) heic=\(heic.count, privacy: .public)"
+            )
+            return .notSmaller
+        }
+        do {
+            let url = try heicFileURL(sessionID: sessionID)
+            try heic.write(to: url, options: .atomic)
+            return .converted(url: url, originalBytes: originalBytes, heicBytes: heic.count)
+        } catch {
+            logger.error(
+                "heic convert: write failed session=\(sessionID.uuidString, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
+            return .failed
+        }
+    }
+
+    /// 截图里多是文字，0.8 放大看也没有明显的压缩痕迹，OCR 和发给模型的 1280px JPEG 不受影响。
+    private static let heicQuality = 0.8
 
     /// 列表缩略图：按目标尺寸解码，不解整张原图。调用方应在主线程之外执行。
     static func thumbnail(url: URL, maxPixelSize: Int) -> UIImage? {

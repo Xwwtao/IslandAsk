@@ -82,6 +82,10 @@ final class SessionCoordinator {
     var isOrganizingPendingShareCards = false
     /// M-C2 补充：backfillLinkImages 正在运行。
     var isBackfillingLinkImages = false
+    /// 性能优化：上次回前台做过期清理的时间。保留天数按天算，一小时内不重复清理。
+    var lastPurgeAt: ContinuousClock.Instant?
+    /// 性能优化：截图转 HEIC 正在运行（SessionCoordinator+Storage.swift）。
+    var isCompactingScreenshots = false
 
     var isStartingSession = false
     var isStopping = false
@@ -1050,6 +1054,16 @@ final class SessionCoordinator {
         )
         deleteCards(ids: Array(ids))
     }
+
+    /// 回到前台时调用：一小时内清理过就跳过。改保留天数时设置页直接调 purgeExpiredSessions，不受限制。
+    func purgeExpiredSessionsIfDue() {
+        if let lastPurgeAt, clock.now - lastPurgeAt < Self.purgeInterval { return }
+        lastPurgeAt = clock.now
+        let (_, ms) = PerformanceTrace.measure("maintenance.purge") { purgeExpiredSessions() }
+        logger.info("purge check finished elapsedMs=\(ms, privacy: .public)")
+    }
+
+    private static let purgeInterval: Duration = .seconds(3600)
 
     /// 旧入口：会话页的删除。卡片与会话同 id，统一按卡片删除（级联删除会话、截图、录音）。
     func deleteSession(id: UUID) {

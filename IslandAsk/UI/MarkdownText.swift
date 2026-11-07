@@ -9,6 +9,7 @@
 //
 
 import SwiftUI
+import os
 
 struct MarkdownText: View {
 
@@ -31,7 +32,9 @@ struct MarkdownText: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } else {
+            // 详情页其他状态（输入框、播放进度等）变化时，回答内容没变就不重新解析整篇。
             MarkdownBlocksView(markdown: markdown)
+                .equatable()
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .textSelection(.enabled)
         }
@@ -45,7 +48,7 @@ private struct MarkdownBlocksView: View, Equatable {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(MarkdownBlock.parse(markdown).enumerated(), id: \.offset) { _, block in
+            ForEach(Self.parsed(markdown).enumerated(), id: \.offset) { _, block in
                 blockView(block)
             }
         }
@@ -88,6 +91,12 @@ private struct MarkdownBlocksView: View, Equatable {
         case .rule:
             Divider()
         }
+    }
+
+    private static func parsed(_ markdown: String) -> [MarkdownBlock] {
+        let state = PerformanceTrace.signposter.beginInterval("markdown.parse")
+        defer { PerformanceTrace.signposter.endInterval("markdown.parse", state) }
+        return MarkdownBlock.parse(markdown)
     }
 
     /// 行内语法；解析失败就原样显示。

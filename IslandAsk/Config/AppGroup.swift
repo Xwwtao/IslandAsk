@@ -51,9 +51,10 @@ nonisolated enum AppGroup {
         sharedContainerURL != nil
     }
 
-    private static var sharedContainerURL: URL? {
+    /// 进程内只查一次：列表每一行的截图地址都要用它，每次都问系统要容器路径不划算。
+    /// 容器路径在进程生命周期里不会变（重装后才变，而重装会重启进程）。
+    private static let sharedContainerURL: URL? =
         FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: identifier)
-    }
 }
 
 nonisolated enum AppGroupError: LocalizedError {

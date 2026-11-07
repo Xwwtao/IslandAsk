@@ -6,7 +6,7 @@
 //
 //  与 SPEC 的偏差：
 //  - 多一个 errorMessage：会话页显示失败原因、决定是否显示「重新提问」。
-//  - screenshotPath 存相对 App Group 容器的路径（sessions/<id>.png），容器绝对路径在重装后会变。
+//  - screenshotPath 存相对 App Group 容器的路径（sessions/<id>.png，后台转码后为 sessions/<id>.heic），容器绝对路径在重装后会变。
 //  - ChatMessage 有反向关系 session；messages 不保证顺序，显示时用 sortedMessages。
 //  - M-C1：Card 比 SPEC 6.11 多一个 intent（ask / collect / both），详情页靠它决定显示问答还是收藏摘要。
 //

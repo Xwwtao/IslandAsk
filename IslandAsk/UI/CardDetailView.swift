@@ -488,8 +488,9 @@ struct LinkIconImage: View {
     @State private var image: UIImage?
 
     var body: some View {
+        let shown = image ?? ThumbnailCache.shared.cached(url: url, maxPixelSize: Int(side * displayScale))
         Group {
-            if let image {
+            if let image = shown {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFit()
@@ -503,13 +504,8 @@ struct LinkIconImage: View {
         .clipShape(.rect(cornerRadius: side * 0.22))
         .accessibilityHidden(true)
         .task(id: url) {
-            image = await Self.load(url, maxPixelSize: Int(side * displayScale))
+            image = await ThumbnailCache.shared.load(url: url, maxPixelSize: Int(side * displayScale))
         }
-    }
-
-    @concurrent
-    nonisolated static func load(_ url: URL, maxPixelSize: Int) async -> UIImage? {
-        ScreenshotStore.thumbnail(url: url, maxPixelSize: maxPixelSize)
     }
 }
 
@@ -522,8 +518,9 @@ struct LinkCoverImage: View {
     @State private var image: UIImage?
 
     var body: some View {
+        let shown = image ?? ThumbnailCache.shared.cached(url: url, maxPixelSize: Int(600 * displayScale))
         Group {
-            if let image {
+            if let image = shown {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
@@ -534,10 +531,10 @@ struct LinkCoverImage: View {
                     .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.2), value: image != nil)
+        .animation(.easeOut(duration: 0.2), value: shown != nil)
         .accessibilityHidden(true)
         .task(id: url) {
-            image = await LinkIconImage.load(url, maxPixelSize: Int(600 * displayScale))
+            image = await ThumbnailCache.shared.load(url: url, maxPixelSize: Int(600 * displayScale))
         }
     }
 }
