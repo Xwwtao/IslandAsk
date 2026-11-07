@@ -65,7 +65,7 @@ nonisolated enum LinkImageStore {
         request.setValue(LinkMetadataFetcher.userAgent, forHTTPHeaderField: "User-Agent")
         request.setValue("image/*,*/*;q=0.5", forHTTPHeaderField: "Accept")
         do {
-            let (bytes, response) = try await session.bytes(for: request)
+            let (bytes, response) = try await session.bytes(for: request, delegate: PrivateRedirectBlocker(originalHost: url.host()))
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
                 logger.notice(
                     "image download http error kind=\(kind.rawValue, privacy: .public) host=\(url.host() ?? "", privacy: .public) status=\((response as? HTTPURLResponse)?.statusCode ?? -1, privacy: .public)"
@@ -132,5 +132,36 @@ nonisolated enum LinkImageStore {
         CGImageDestinationAddImage(destination, image, properties)
         guard CGImageDestinationFinalize(destination) else { return nil }
         return output as Data
+    }
+}
+
+/// 安全：图片地址来自网页声明，跳转目标同样不可信。跳到内网 / 本机地址的请求直接停止（和原地址同一主机的除外）。
+nonisolated final class PrivateRedirectBlocker: NSObject, URLSessionTaskDelegate, Sendable {
+
+    private let originalHost: String?
+
+    init(originalHost: String?) {
+        self.originalHost = originalHost?.lowercased()
+    }
+
+    // 用 completionHandler 版本：async 版本的这个代理方法会让当前的 Swift 编译器（6.4）在生成 SIL 时崩溃。
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(Self.allowedRedirect(request, originalHost: originalHost))
+    }
+
+    static func allowedRedirect(_ request: URLRequest, originalHost: String?) -> URLRequest? {
+        guard let url = request.url, LinkMetadataFetcher.isFetchable(url), let host = url.host() else { return nil }
+        if NetworkAddressPolicy.isPrivateHost(host), host.lowercased() != originalHost {
+            Logger(subsystem: Bundle.main.bundleIdentifier ?? "com.wentao.IslandAsk", category: "link")
+                .notice("image redirect to private host blocked")
+            return nil
+        }
+        return request
     }
 }

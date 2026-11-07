@@ -349,6 +349,12 @@ nonisolated enum LinkMetadataFetcher {
             resolved = baseURL.flatMap { URL(string: trimmed, relativeTo: $0)?.absoluteURL }
         }
         guard let resolved, isFetchable(resolved) else { return nil }
+        // 安全：图片、图标地址是网页自己声明的，不可信。指向局域网、本机等内网地址的一律丢弃，
+        // 防止恶意网页借 App 向用户局域网里的设备发请求（SSRF）。和页面同一主机的除外（用户自己分享的就是内网地址）。
+        if let host = resolved.host(), NetworkAddressPolicy.isPrivateHost(host),
+           host.lowercased() != baseURL?.host()?.lowercased() {
+            return nil
+        }
         return resolved
     }
 
@@ -435,5 +441,69 @@ nonisolated enum LinkMetadataFetcher {
     private static func milliseconds(_ duration: Duration) -> Int {
         let (seconds, attoseconds) = duration.components
         return Int(seconds) * 1000 + Int(attoseconds / 1_000_000_000_000_000)
+    }
+}
+
+// MARK: - 内网地址判断（安全）
+
+/// 判断主机名是不是内网 / 本机地址：IP 字面量在私有、回环、链路本地、CGNAT 等网段，或 localhost、.local 这类本地名字。
+/// 只看字面量，不做 DNS 解析（解析到内网的公网域名防不住，属于已知局限）。
+nonisolated enum NetworkAddressPolicy {
+
+    static func isPrivateHost(_ rawHost: String) -> Bool {
+        var host = rawHost.lowercased()
+        if host.hasPrefix("["), host.hasSuffix("]") {
+            host = String(host.dropFirst().dropLast())
+        }
+        if host.hasSuffix(".") { host.removeLast() }
+        guard !host.isEmpty else { return true }
+        if host == "localhost" || host.hasSuffix(".localhost") || host.hasSuffix(".local")
+            || host.hasSuffix(".internal") || host.hasSuffix(".lan") || host.hasSuffix(".home.arpa") {
+            return true
+        }
+        if let octets = ipv4Octets(host) {
+            return isPrivateIPv4(octets)
+        }
+        if host.contains(":") {
+            return isPrivateIPv6(host)
+        }
+        // 不带点的单段名字（如 router）会按局域网搜索域解析。
+        return !host.contains(".")
+    }
+
+    private static func ipv4Octets(_ host: String) -> [Int]? {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return nil }
+        let octets = parts.compactMap { Int($0) }
+        guard octets.count == 4, octets.allSatisfy({ (0...255).contains($0) }) else { return nil }
+        return octets
+    }
+
+    private static func isPrivateIPv4(_ o: [Int]) -> Bool {
+        switch (o[0], o[1]) {
+        case (0, _), (10, _), (127, _): return true
+        case (169, 254): return true
+        case (172, 16...31): return true
+        case (192, 168): return true
+        case (100, 64...127): return true          // CGNAT
+        case (198, 18...19): return true           // 基准测试网段
+        case (224...255, _): return true           // 组播、保留
+        default: return false
+        }
+    }
+
+    private static func isPrivateIPv6(_ host: String) -> Bool {
+        let address = host.split(separator: "%").first.map(String.init) ?? host   // 去掉 zone id
+        if address == "::" || address == "::1" { return true }
+        if address.hasPrefix("fe8") || address.hasPrefix("fe9") || address.hasPrefix("fea") || address.hasPrefix("feb") {
+            return true                             // fe80::/10 链路本地
+        }
+        if address.hasPrefix("fc") || address.hasPrefix("fd") { return true }   // fc00::/7 唯一本地
+        if address.hasPrefix("ff") { return true }  // 组播
+        // IPv4 映射地址 ::ffff:a.b.c.d
+        if address.hasPrefix("::ffff:"), let octets = ipv4Octets(String(address.dropFirst(7))) {
+            return isPrivateIPv4(octets)
+        }
+        return false
     }
 }

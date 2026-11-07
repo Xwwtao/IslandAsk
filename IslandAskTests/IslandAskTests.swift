@@ -711,3 +711,41 @@ struct CardSearchQueryTests {
         #expect(CardSearchQuery("##漫威").terms == [.init(text: "漫威", tagOnly: true)])
     }
 }
+
+struct NetworkAddressPolicyTests {
+
+    @Test func flagsPrivateAndLocalHosts() {
+        for host in ["192.168.1.1", "10.0.0.5", "172.20.3.4", "127.0.0.1", "169.254.169.254", "100.64.0.1",
+                     "0.0.0.0", "localhost", "printer.local", "router", "[::1]", "fe80::1", "fd12::3", "::ffff:192.168.0.1"] {
+            #expect(NetworkAddressPolicy.isPrivateHost(host), "\(host)")
+        }
+    }
+
+    @Test func allowsPublicHosts() {
+        for host in ["mmbiz.qpic.cn", "sns-i11.rednotecdn.com", "8.8.8.8", "172.32.0.1", "2001:4860::8888", "example.com"] {
+            #expect(!NetworkAddressPolicy.isPrivateHost(host), "\(host)")
+        }
+    }
+
+    @Test func dropsPageDeclaredPrivateImageURLs() {
+        let base = URL(string: "https://evil.example.com/post")
+        #expect(LinkMetadataFetcher.resolveWebURL("http://192.168.1.1/reset", baseURL: base) == nil)
+        #expect(LinkMetadataFetcher.resolveWebURL("http://localhost:8080/x.png", baseURL: base) == nil)
+        #expect(LinkMetadataFetcher.resolveWebURL("https://cdn.example.com/a.png", baseURL: base) != nil)
+        // 用户自己分享的就是内网页面时，同一主机的图片可以取。
+        let lanBase = URL(string: "http://192.168.1.10/wiki")
+        #expect(LinkMetadataFetcher.resolveWebURL("/logo.png", baseURL: lanBase) != nil)
+    }
+}
+
+struct PrivateRedirectTests {
+
+    @Test func blocksRedirectIntoPrivateNetwork() {
+        let toLAN = URLRequest(url: URL(string: "http://192.168.1.1/admin")!)
+        #expect(PrivateRedirectBlocker.allowedRedirect(toLAN, originalHost: "cdn.example.com") == nil)
+        let toPublic = URLRequest(url: URL(string: "https://img.example.com/a.jpg")!)
+        #expect(PrivateRedirectBlocker.allowedRedirect(toPublic, originalHost: "cdn.example.com") != nil)
+        let sameLANHost = URLRequest(url: URL(string: "http://192.168.1.10/b.png")!)
+        #expect(PrivateRedirectBlocker.allowedRedirect(sameLANHost, originalHost: "192.168.1.10") != nil)
+    }
+}
